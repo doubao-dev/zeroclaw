@@ -80,6 +80,7 @@ impl ProcessTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' parameter for spawn action"))?;
+        let effective_command = self.security.apply_shell_redirect_policy(command);
 
         // Check concurrent running process count.
         {
@@ -118,7 +119,10 @@ impl ProcessTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        if let Err(reason) = self.security.validate_command_execution(command, approved) {
+        if let Err(reason) = self
+            .security
+            .validate_command_execution(&effective_command, approved)
+        {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -126,7 +130,7 @@ impl ProcessTool {
             });
         }
 
-        if let Some(path) = self.security.forbidden_path_argument(command) {
+        if let Some(path) = self.security.forbidden_path_argument(&effective_command) {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -145,7 +149,7 @@ impl ProcessTool {
         // Build command via runtime adapter.
         let mut cmd = match self
             .runtime
-            .build_shell_command(command, &self.security.workspace_dir)
+            .build_shell_command(&effective_command, &self.security.workspace_dir)
         {
             Ok(cmd) => cmd,
             Err(e) => {
@@ -201,7 +205,7 @@ impl ProcessTool {
 
         let entry = ProcessEntry {
             id,
-            command: command.to_string(),
+            command: effective_command.clone(),
             pid,
             started_at: Instant::now(),
             child: Mutex::new(child),
@@ -217,7 +221,7 @@ impl ProcessTool {
             output: json!({
                 "id": id,
                 "pid": pid,
-                "message": format!("Process started: {command}")
+                "message": format!("Process started: {effective_command}")
             })
             .to_string(),
             error: None,

@@ -132,6 +132,7 @@ Operational note for container users:
 | `loop_detection_no_progress_threshold` | `3` | Same tool+args producing identical output this many times triggers loop detection. `0` disables |
 | `loop_detection_ping_pong_cycles` | `2` | A→B→A→B alternating pattern cycle count threshold. `0` disables |
 | `loop_detection_failure_streak` | `3` | Same tool consecutive failure count threshold. `0` disables |
+| `deferred_action_policy` | `error` | Behavior when model repeats “will act” without emitting a verifiable tool call: `error` hard-fails, `warn` returns the text response, `ignore` disables follow-through detection |
 
 Notes:
 
@@ -968,6 +969,11 @@ Environment overrides:
 | `max_cost_per_day_cents` | `500` | per-policy spend guardrail |
 | `require_approval_for_medium_risk` | `true` | approval gate for medium-risk commands |
 | `block_high_risk_commands` | `true` | hard block for high-risk commands |
+| `shell_redirect_policy` | `block` | `block` keeps redirects disallowed; `strip` removes common `2>&1`/`2>/dev/null`/`|&` patterns before validation/execution |
+| `allow_shell_expansion_syntax` | `false` | allow `$VAR`/`${VAR}`/`$(...)`/backticks and process substitution in shell commands |
+| `allow_shell_redirection_syntax` | `false` | allow unquoted shell redirects (`>`, `>>`, `<`) |
+| `allow_shell_background_operator` | `false` | allow unquoted background operator `&` |
+| `allow_shell_tee` | `false` | allow `tee` usage in shell commands |
 | `allow_sensitive_file_reads` | `false` | allow `file_read` on sensitive files/dirs (for example `.env`, `.aws/credentials`, private keys) |
 | `allow_sensitive_file_writes` | `false` | allow `file_write`/`file_edit` on sensitive files/dirs (for example `.env`, `.aws/credentials`, private keys) |
 | `auto_approve` | `[]` | tool operations always auto-approved |
@@ -991,7 +997,7 @@ Notes:
 - `file_write` and `file_edit` block sensitive secret-bearing files/directories by default. Set `allow_sensitive_file_writes = true` only for controlled break-glass sessions.
 - `file_read`, `file_write`, and `file_edit` refuse multiply-linked files (hard-link guard) to reduce workspace path bypass risk via hard-link escapes.
 - Shell separator/operator parsing is quote-aware. Characters like `;` inside quoted arguments are treated as literals, not command separators.
-- Unquoted shell chaining/operators are still enforced by policy checks (`;`, `|`, `&&`, `||`, background chaining, and redirects).
+- Unquoted shell chaining/operators are still enforced by policy checks (`;`, `|`, `&&`, `||`, background chaining, and redirects) unless explicitly relaxed via `allow_shell_*` toggles.
 - In supervised mode on non-CLI channels, operators can persist human-approved tools with:
   - One-step flow: `/approve <tool>`.
   - Two-step flow: `/approve-request <tool>` then `/approve-confirm <request-id>` (same sender + same chat/channel).

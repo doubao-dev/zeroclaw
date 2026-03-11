@@ -18,6 +18,14 @@ pub enum AutonomyLevel {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellRedirectPolicy {
+    #[default]
+    Block,
+    Strip,
+}
+
 impl std::str::FromStr for AutonomyLevel {
     type Err = String;
 
@@ -125,6 +133,11 @@ pub struct SecurityPolicy {
     pub max_cost_per_day_cents: u32,
     pub require_approval_for_medium_risk: bool,
     pub block_high_risk_commands: bool,
+    pub shell_redirect_policy: ShellRedirectPolicy,
+    pub allow_shell_expansion_syntax: bool,
+    pub allow_shell_redirection_syntax: bool,
+    pub allow_shell_background_operator: bool,
+    pub allow_shell_tee: bool,
     pub shell_env_passthrough: Vec<String>,
     pub allow_sensitive_file_reads: bool,
     pub allow_sensitive_file_writes: bool,
@@ -185,6 +198,11 @@ impl Default for SecurityPolicy {
             max_cost_per_day_cents: 1000,
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
+            shell_redirect_policy: ShellRedirectPolicy::Block,
+            allow_shell_expansion_syntax: false,
+            allow_shell_redirection_syntax: false,
+            allow_shell_background_operator: false,
+            allow_shell_tee: false,
             shell_env_passthrough: vec![],
             allow_sensitive_file_reads: false,
             allow_sensitive_file_writes: false,
@@ -522,6 +540,184 @@ fn contains_unquoted_shell_variable_expansion(command: &str) -> bool {
     false
 }
 
+fn is_token_boundary_char(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, ';' | '\n' | '|' | '&' | ')' | '(')
+}
+
+fn has_token_boundary_before(chars: &[char], index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    chars
+        .get(index - 1)
+        .is_some_and(|ch| is_token_boundary_char(*ch))
+}
+
+fn starts_with_literal(chars: &[char], start: usize, literal: &str) -> bool {
+    let literal_chars: Vec<char> = literal.chars().collect();
+    chars
+        .get(start..start + literal_chars.len())
+        .is_some_and(|slice| slice == literal_chars)
+}
+
+fn consume_stream_merge_redirect(chars: &[char], start: usize) -> Option<usize> {
+    if chars[start].is_ascii_digit() && !has_token_boundary_before(chars, start) {
+        return None;
+    }
+
+    let mut i = start;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i >= chars.len() || chars[i] != '>' {
+        return None;
+    }
+    i += 1;
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= chars.len() || chars[i] != '&' {
+        return None;
+    }
+    i += 1;
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    let fd_start = i;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == fd_start {
+        return None;
+    }
+    Some(i - start)
+}
+
+fn consume_dev_null_redirect(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    if chars[i] == '&' {
+        i += 1;
+        if i >= chars.len() || chars[i] != '>' {
+            return None;
+        }
+        i += 1;
+    } else {
+        if chars[i].is_ascii_digit() && !has_token_boundary_before(chars, start) {
+            return None;
+        }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i >= chars.len() || !matches!(chars[i], '>' | '<') {
+            return None;
+        }
+        let op = chars[i];
+        i += 1;
+        if op == '>' && i < chars.len() && chars[i] == '>' {
+            i += 1;
+        }
+        if op == '>' && i < chars.len() && chars[i] == '&' {
+            i += 1;
+        }
+    }
+
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if !starts_with_literal(chars, i, "/dev/null") {
+        return None;
+    }
+    i += "/dev/null".chars().count();
+    if i < chars.len() && !is_token_boundary_char(chars[i]) {
+        return None;
+    }
+    Some(i - start)
+}
+
+fn strip_supported_redirects(command: &str) -> String {
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = String::with_capacity(command.len());
+    let mut quote = QuoteState::None;
+    let mut escaped = false;
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        match quote {
+            QuoteState::Single => {
+                if ch == '\'' {
+                    quote = QuoteState::None;
+                }
+                out.push(ch);
+                i += 1;
+            }
+            QuoteState::Double => {
+                if escaped {
+                    escaped = false;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if ch == '"' {
+                    quote = QuoteState::None;
+                }
+                out.push(ch);
+                i += 1;
+            }
+            QuoteState::None => {
+                if escaped {
+                    escaped = false;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if ch == '\'' {
+                    quote = QuoteState::Single;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if ch == '"' {
+                    quote = QuoteState::Double;
+                    out.push(ch);
+                    i += 1;
+                    continue;
+                }
+
+                if ch == '|' && chars.get(i + 1).is_some_and(|next| *next == '&') {
+                    out.push('|');
+                    i += 2;
+                    continue;
+                }
+
+                if let Some(consumed) = consume_stream_merge_redirect(&chars, i)
+                    .or_else(|| consume_dev_null_redirect(&chars, i))
+                {
+                    i += consumed;
+                    continue;
+                }
+
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+
+    out
+}
+
 fn strip_wrapping_quotes(token: &str) -> &str {
     token.trim_matches(|c| c == '"' || c == '\'')
 }
@@ -643,6 +839,13 @@ fn is_high_risk_base_command(base: &str) -> bool {
 }
 
 impl SecurityPolicy {
+    pub fn apply_shell_redirect_policy(&self, command: &str) -> String {
+        match self.shell_redirect_policy {
+            ShellRedirectPolicy::Block => command.to_string(),
+            ShellRedirectPolicy::Strip => strip_supported_redirects(command),
+        }
+    }
+
     /// Resolve a user-supplied path argument using the same semantics as
     /// `is_path_allowed` (including `~` expansion).
     ///
@@ -867,26 +1070,30 @@ impl SecurityPolicy {
             return Err("readonly autonomy level blocks shell command execution".into());
         }
 
-        if command.contains('`')
-            || contains_unquoted_shell_variable_expansion(command)
-            || command.contains("<(")
-            || command.contains(">(")
+        if !self.allow_shell_expansion_syntax
+            && (command.contains('`')
+                || contains_unquoted_shell_variable_expansion(command)
+                || command.contains("<(")
+                || command.contains(">("))
         {
             return Err("command contains disallowed shell expansion syntax".into());
         }
 
-        if contains_unquoted_char(command, '>') || contains_unquoted_char(command, '<') {
+        if !self.allow_shell_redirection_syntax
+            && (contains_unquoted_char(command, '>') || contains_unquoted_char(command, '<'))
+        {
             return Err("command contains disallowed redirection syntax".into());
         }
 
-        if command
-            .split_whitespace()
-            .any(|w| w == "tee" || w.ends_with("/tee"))
+        if !self.allow_shell_tee
+            && command
+                .split_whitespace()
+                .any(|w| w == "tee" || w.ends_with("/tee"))
         {
             return Err("command contains disallowed tee usage".into());
         }
 
-        if contains_unquoted_single_ampersand(command) {
+        if !self.allow_shell_background_operator && contains_unquoted_single_ampersand(command) {
             return Err("command contains disallowed background chaining operator '&'".into());
         }
 
@@ -1049,15 +1256,17 @@ impl SecurityPolicy {
         command: &str,
         approved: bool,
     ) -> Result<CommandRiskLevel, String> {
+        let effective_command = self.apply_shell_redirect_policy(command);
+
         let allowlist_eval = self
-            .evaluate_command_allowlist(command)
+            .evaluate_command_allowlist(&effective_command)
             .map_err(|reason| format!("Command not allowed by security policy: {reason}"))?;
 
-        if let Some(path) = self.forbidden_path_argument(command) {
+        if let Some(path) = self.forbidden_path_argument(&effective_command) {
             return Err(format!("Path blocked by security policy: {path}"));
         }
 
-        let risk = self.command_risk_level(command);
+        let risk = self.command_risk_level(&effective_command);
 
         if risk == CommandRiskLevel::High {
             if self.block_high_risk_commands && !allowlist_eval.high_risk_overridden {
@@ -1564,6 +1773,11 @@ impl SecurityPolicy {
             max_cost_per_day_cents: autonomy_config.max_cost_per_day_cents,
             require_approval_for_medium_risk: autonomy_config.require_approval_for_medium_risk,
             block_high_risk_commands: autonomy_config.block_high_risk_commands,
+            shell_redirect_policy: autonomy_config.shell_redirect_policy,
+            allow_shell_expansion_syntax: autonomy_config.allow_shell_expansion_syntax,
+            allow_shell_redirection_syntax: autonomy_config.allow_shell_redirection_syntax,
+            allow_shell_background_operator: autonomy_config.allow_shell_background_operator,
+            allow_shell_tee: autonomy_config.allow_shell_tee,
             shell_env_passthrough: autonomy_config.shell_env_passthrough.clone(),
             allow_sensitive_file_reads: autonomy_config.allow_sensitive_file_reads,
             allow_sensitive_file_writes: autonomy_config.allow_sensitive_file_writes,
@@ -2305,6 +2519,91 @@ mod tests {
     }
 
     #[test]
+    fn strip_policy_normalizes_common_redirect_patterns() {
+        let p = SecurityPolicy {
+            shell_redirect_policy: ShellRedirectPolicy::Strip,
+            ..default_policy()
+        };
+
+        let merged = p.apply_shell_redirect_policy("echo hello 2>&1");
+        assert!(!merged.contains("2>&1"));
+        assert!(merged.contains("echo hello"));
+
+        let devnull = p.apply_shell_redirect_policy("echo hello 2>/dev/null");
+        assert!(!devnull.contains("/dev/null"));
+        assert!(devnull.contains("echo hello"));
+
+        let pipeline = p.apply_shell_redirect_policy("echo hello |& cat");
+        assert!(!pipeline.contains("|&"));
+        assert!(pipeline.contains("| cat"));
+
+        let quoted = p.apply_shell_redirect_policy("echo '2>&1' \"|&\" '2>/dev/null'");
+        assert_eq!(quoted, "echo '2>&1' \"|&\" '2>/dev/null'");
+    }
+
+    #[test]
+    fn strip_policy_preserves_command_trailing_digits_when_stripping() {
+        let p = SecurityPolicy {
+            shell_redirect_policy: ShellRedirectPolicy::Strip,
+            ..default_policy()
+        };
+
+        let merged = p.apply_shell_redirect_policy("python3>&1 -V");
+        assert_eq!(merged, "python3 -V");
+
+        let devnull = p.apply_shell_redirect_policy("python3>/dev/null -V");
+        assert_eq!(devnull, "python3 -V");
+
+        let stdin_devnull = p.apply_shell_redirect_policy("python3</dev/null -V");
+        assert_eq!(stdin_devnull, "python3 -V");
+    }
+
+    #[test]
+    fn strip_policy_keeps_digit_suffixed_commands_allowlisted() {
+        let p = SecurityPolicy {
+            shell_redirect_policy: ShellRedirectPolicy::Strip,
+            allowed_commands: vec!["python3".into()],
+            ..default_policy()
+        };
+
+        assert!(p.validate_command_execution("python3>&1 -V", false).is_ok());
+        assert!(p
+            .validate_command_execution("python3>/dev/null -V", false)
+            .is_ok());
+    }
+
+    #[test]
+    fn strip_policy_allows_normalized_stderr_redirects() {
+        let p = SecurityPolicy {
+            shell_redirect_policy: ShellRedirectPolicy::Strip,
+            allowed_commands: vec!["echo".into()],
+            ..default_policy()
+        };
+
+        assert!(p
+            .validate_command_execution("echo hello 2>&1", false)
+            .is_ok());
+        assert!(p
+            .validate_command_execution("echo hello 2>/dev/null", false)
+            .is_ok());
+    }
+
+    #[test]
+    fn strip_policy_keeps_unsupported_redirects_blocked() {
+        let p = SecurityPolicy {
+            shell_redirect_policy: ShellRedirectPolicy::Strip,
+            ..default_policy()
+        };
+
+        assert!(p
+            .validate_command_execution("echo hello > out.txt", false)
+            .is_err());
+        assert!(p
+            .validate_command_execution("cat </etc/passwd", false)
+            .is_err());
+    }
+
+    #[test]
     fn quoted_ampersand_and_redirect_literals_are_not_treated_as_operators() {
         let p = default_policy();
         assert!(p.is_command_allowed("echo \"A&B\""));
@@ -2418,6 +2717,45 @@ mod tests {
         let p = default_policy();
         assert!(!p.is_command_allowed("cat <(echo pwned)"));
         assert!(!p.is_command_allowed("ls >(cat /etc/passwd)"));
+    }
+
+    #[test]
+    fn allow_shell_expansion_syntax_toggle_allows_expansions() {
+        let p = SecurityPolicy {
+            allow_shell_expansion_syntax: true,
+            ..SecurityPolicy::default()
+        };
+        assert!(p.is_command_allowed("echo ${HOME}"));
+        assert!(p.is_command_allowed("cat <(echo pwned)"));
+    }
+
+    #[test]
+    fn allow_shell_redirection_syntax_toggle_allows_redirects() {
+        let p = SecurityPolicy {
+            allow_shell_redirection_syntax: true,
+            ..SecurityPolicy::default()
+        };
+        assert!(p.is_command_allowed("echo ok > out.txt"));
+        assert!(p.is_command_allowed("cat < in.txt"));
+    }
+
+    #[test]
+    fn allow_shell_background_operator_toggle_allows_single_ampersand() {
+        let p = SecurityPolicy {
+            allow_shell_background_operator: true,
+            ..SecurityPolicy::default()
+        };
+        assert!(p.is_command_allowed("ls & echo done"));
+    }
+
+    #[test]
+    fn allow_shell_tee_toggle_allows_tee_when_allowlisted() {
+        let p = SecurityPolicy {
+            allow_shell_tee: true,
+            allowed_commands: vec!["echo".into(), "tee".into()],
+            ..SecurityPolicy::default()
+        };
+        assert!(p.is_command_allowed("echo ok | tee out.txt"));
     }
 
     #[test]

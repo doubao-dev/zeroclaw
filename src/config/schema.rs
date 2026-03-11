@@ -2,7 +2,7 @@ use crate::config::traits::ChannelConfig;
 use crate::providers::{
     canonical_china_provider_name, is_glm_alias, is_qwen_oauth_alias, is_zai_alias,
 };
-use crate::security::{AutonomyLevel, DomainMatcher};
+use crate::security::{AutonomyLevel, DomainMatcher, ShellRedirectPolicy};
 use anyhow::{Context, Result};
 use directories::UserDirs;
 use schemars::JsonSchema;
@@ -1079,6 +1079,18 @@ pub struct AgentConfig {
     /// set to `0` for explicit disable.
     #[serde(default = "default_safety_heartbeat_turn_interval")]
     pub safety_heartbeat_turn_interval: usize,
+
+    #[serde(default)]
+    pub deferred_action_policy: DeferredActionPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredActionPolicy {
+    #[default]
+    Error,
+    Warn,
+    Ignore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1186,6 +1198,7 @@ impl Default for AgentConfig {
             loop_detection_failure_streak: default_loop_detection_failure_streak(),
             safety_heartbeat_interval: default_safety_heartbeat_interval(),
             safety_heartbeat_turn_interval: default_safety_heartbeat_turn_interval(),
+            deferred_action_policy: DeferredActionPolicy::default(),
         }
     }
 }
@@ -3435,6 +3448,40 @@ pub struct AutonomyConfig {
     #[serde(default = "default_true")]
     pub block_high_risk_commands: bool,
 
+    #[serde(default)]
+    pub shell_redirect_policy: ShellRedirectPolicy,
+
+    /// Allow shell expansion / substitution syntax in shell tool commands.
+    ///
+    /// When enabled, the policy will no longer reject command strings containing
+    /// shell expansions like `$HOME`, `${VAR}`, `$(...)`, backticks, and process
+    /// substitution (`<(...)`, `>(...)`).
+    ///
+    /// Default is `false` because these constructs can hide additional execution
+    /// and can bypass path-argument safety heuristics.
+    #[serde(default)]
+    pub allow_shell_expansion_syntax: bool,
+
+    /// Allow unquoted redirection operators (`>`, `>>`, `<`) in shell tool commands.
+    ///
+    /// Default is `false` because redirects can write/read arbitrary paths and may
+    /// bypass path policy in some shells.
+    #[serde(default)]
+    pub allow_shell_redirection_syntax: bool,
+
+    /// Allow unquoted background chaining operator `&` (single ampersand).
+    ///
+    /// Default is `false` because `&` makes command flow harder to reason about.
+    #[serde(default)]
+    pub allow_shell_background_operator: bool,
+
+    /// Allow `tee` usage in shell tool commands.
+    ///
+    /// Default is `false` because `tee` commonly writes to paths that may be
+    /// sensitive or outside intended policy scope.
+    #[serde(default)]
+    pub allow_shell_tee: bool,
+
     /// Additional environment variables allowed for shell tool subprocesses.
     ///
     /// These names are explicitly allowlisted and merged with the built-in safe
@@ -3613,6 +3660,11 @@ impl Default for AutonomyConfig {
             max_cost_per_day_cents: 1000,
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
+            shell_redirect_policy: ShellRedirectPolicy::Block,
+            allow_shell_expansion_syntax: false,
+            allow_shell_redirection_syntax: false,
+            allow_shell_background_operator: false,
+            allow_shell_tee: false,
             shell_env_passthrough: vec![],
             allow_sensitive_file_reads: false,
             allow_sensitive_file_writes: false,

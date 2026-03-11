@@ -172,6 +172,7 @@ impl Tool for ShellTool {
             .get("approved")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let effective_command = self.security.apply_shell_redirect_policy(&command);
 
         if self.security.is_rate_limited() {
             return Ok(ToolResult {
@@ -181,7 +182,10 @@ impl Tool for ShellTool {
             });
         }
 
-        match self.security.validate_command_execution(&command, approved) {
+        match self
+            .security
+            .validate_command_execution(&effective_command, approved)
+        {
             Ok(_) => {}
             Err(reason) => {
                 return Ok(ToolResult {
@@ -192,7 +196,7 @@ impl Tool for ShellTool {
             }
         }
 
-        if let Some(path) = self.security.forbidden_path_argument(&command) {
+        if let Some(path) = self.security.forbidden_path_argument(&effective_command) {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -213,7 +217,7 @@ impl Tool for ShellTool {
         // (CWE-200), then re-add only safe, functional variables.
         let mut cmd = match self
             .runtime
-            .build_shell_command(&command, &self.security.workspace_dir)
+            .build_shell_command(&effective_command, &self.security.workspace_dir)
         {
             Ok(cmd) => cmd,
             Err(e) => {

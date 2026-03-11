@@ -541,6 +541,7 @@ async fn run_job_command_with_timeout(
     job: &CronJob,
     timeout: Duration,
 ) -> (bool, String) {
+    let effective_command = security.apply_shell_redirect_policy(&job.command);
     if !security.can_act() {
         return (
             false,
@@ -555,7 +556,7 @@ async fn run_job_command_with_timeout(
         );
     }
 
-    if !security.is_command_allowed(&job.command) {
+    if !security.is_command_allowed(&effective_command) {
         return (
             false,
             format!(
@@ -565,7 +566,7 @@ async fn run_job_command_with_timeout(
         );
     }
 
-    if let Some(path) = security.forbidden_path_argument(&job.command) {
+    if let Some(path) = security.forbidden_path_argument(&effective_command) {
         return (
             false,
             format!("blocked by security policy: forbidden path argument: {path}"),
@@ -581,7 +582,7 @@ async fn run_job_command_with_timeout(
 
     let child = match Command::new("sh")
         .arg("-lc")
-        .arg(&job.command)
+        .arg(&effective_command)
         .current_dir(&config.workspace_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

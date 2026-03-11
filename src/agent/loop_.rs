@@ -313,6 +313,7 @@ tokio::task_local! {
     static SAFETY_HEARTBEAT_CONFIG: Option<SafetyHeartbeatConfig>;
     static TOOL_LOOP_PROGRESS_MODE: ProgressMode;
     static TOOL_LOOP_COST_ENFORCEMENT_CONTEXT: Option<CostEnforcementContext>;
+    static DEFERRED_ACTION_POLICY: crate::config::DeferredActionPolicy;
 }
 
 /// Configuration for periodic safety-constraint re-injection (heartbeat).
@@ -372,6 +373,16 @@ where
     TOOL_LOOP_COST_ENFORCEMENT_CONTEXT
         .scope(context, future)
         .await
+}
+
+pub(crate) async fn scope_deferred_action_policy<F>(
+    policy: crate::config::DeferredActionPolicy,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    DEFERRED_ACTION_POLICY.scope(policy, future).await
 }
 
 fn should_inject_safety_heartbeat(counter: usize, interval: usize) -> bool {
@@ -1741,8 +1752,13 @@ pub async fn run_tool_call_loop(
         }
 
         if tool_calls.is_empty() {
-            let missing_tool_call_signal =
-                parse_issue_detected || looks_like_deferred_action_without_tool_call(&display_text);
+            let deferred_action_policy = DEFERRED_ACTION_POLICY
+                .try_with(|p| *p)
+                .unwrap_or(crate::config::DeferredActionPolicy::Error);
+            let missing_tool_call_signal = deferred_action_policy
+                != crate::config::DeferredActionPolicy::Ignore
+                && (parse_issue_detected
+                    || looks_like_deferred_action_without_tool_call(&display_text));
             let missing_tool_call_followthrough = !missing_tool_call_retry_used
                 && iteration + 1 < max_iterations
                 && !tool_specs.is_empty()
@@ -1798,8 +1814,16 @@ pub async fn run_tool_call_loop(
                         "response_excerpt": truncate_with_ellipsis(&scrub_credentials(&display_text), 600),
                     }),
                 );
-                anyhow::bail!(
-                    "Model deferred action without emitting a tool call after retry; refusing to return unverified completion."
+                let policy = DEFERRED_ACTION_POLICY
+                    .try_with(|p| *p)
+                    .unwrap_or(crate::config::DeferredActionPolicy::Error);
+                if policy == crate::config::DeferredActionPolicy::Error {
+                    anyhow::bail!(
+                        "Model deferred action without emitting a tool call after retry; refusing to return unverified completion."
+                    );
+                }
+                tracing::warn!(
+                    "Model deferred action without emitting a tool call after retry; returning text response."
                 );
             }
 
@@ -2783,27 +2807,30 @@ pub async fn run(
         };
         let response = scope_cost_enforcement_context(
             cost_enforcement_context.clone(),
-            SAFETY_HEARTBEAT_CONFIG.scope(
-                hb_cfg,
-                LOOP_DETECTION_CONFIG.scope(
-                    ld_cfg,
-                    run_tool_call_loop(
-                        provider.as_ref(),
-                        &mut history,
-                        &tools_registry,
-                        observer.as_ref(),
-                        provider_name,
-                        &model_name,
-                        temperature,
-                        false,
-                        approval_manager.as_ref(),
-                        channel_name,
-                        &config.multimodal,
-                        config.agent.max_tool_iterations,
-                        None,
-                        None,
-                        effective_hooks,
-                        &[],
+            scope_deferred_action_policy(
+                config.agent.deferred_action_policy,
+                SAFETY_HEARTBEAT_CONFIG.scope(
+                    hb_cfg,
+                    LOOP_DETECTION_CONFIG.scope(
+                        ld_cfg,
+                        run_tool_call_loop(
+                            provider.as_ref(),
+                            &mut history,
+                            &tools_registry,
+                            observer.as_ref(),
+                            provider_name,
+                            &model_name,
+                            temperature,
+                            false,
+                            approval_manager.as_ref(),
+                            channel_name,
+                            &config.multimodal,
+                            config.agent.max_tool_iterations,
+                            None,
+                            None,
+                            effective_hooks,
+                            &[],
+                        ),
                     ),
                 ),
             ),
@@ -2968,27 +2995,30 @@ pub async fn run(
             };
             let response = match scope_cost_enforcement_context(
                 cost_enforcement_context.clone(),
-                SAFETY_HEARTBEAT_CONFIG.scope(
-                    hb_cfg,
-                    LOOP_DETECTION_CONFIG.scope(
-                        ld_cfg,
-                        run_tool_call_loop(
-                            provider.as_ref(),
-                            &mut history,
-                            &tools_registry,
-                            observer.as_ref(),
-                            provider_name,
-                            &model_name,
-                            temperature,
-                            false,
-                            approval_manager.as_ref(),
-                            channel_name,
-                            &config.multimodal,
-                            config.agent.max_tool_iterations,
-                            None,
-                            None,
-                            effective_hooks,
-                            &[],
+                scope_deferred_action_policy(
+                    config.agent.deferred_action_policy,
+                    SAFETY_HEARTBEAT_CONFIG.scope(
+                        hb_cfg,
+                        LOOP_DETECTION_CONFIG.scope(
+                            ld_cfg,
+                            run_tool_call_loop(
+                                provider.as_ref(),
+                                &mut history,
+                                &tools_registry,
+                                observer.as_ref(),
+                                provider_name,
+                                &model_name,
+                                temperature,
+                                false,
+                                approval_manager.as_ref(),
+                                channel_name,
+                                &config.multimodal,
+                                config.agent.max_tool_iterations,
+                                None,
+                                None,
+                                effective_hooks,
+                                &[],
+                            ),
                         ),
                     ),
                 ),
@@ -3292,19 +3322,22 @@ pub async fn process_message_with_session(
     };
     scope_cost_enforcement_context(
         cost_enforcement_context,
-        SAFETY_HEARTBEAT_CONFIG.scope(
-            hb_cfg,
-            agent_turn(
-                provider.as_ref(),
-                &mut history,
-                &tools_registry,
-                observer.as_ref(),
-                provider_name,
-                &model_name,
-                config.default_temperature,
-                true,
-                &config.multimodal,
-                config.agent.max_tool_iterations,
+        scope_deferred_action_policy(
+            config.agent.deferred_action_policy,
+            SAFETY_HEARTBEAT_CONFIG.scope(
+                hb_cfg,
+                agent_turn(
+                    provider.as_ref(),
+                    &mut history,
+                    &tools_registry,
+                    observer.as_ref(),
+                    provider_name,
+                    &model_name,
+                    config.default_temperature,
+                    true,
+                    &config.multimodal,
+                    config.agent.max_tool_iterations,
+                ),
             ),
         ),
     )
@@ -4582,6 +4615,108 @@ mod tests {
             err_text.contains("deferred action without emitting a tool call"),
             "unexpected error text: {err_text}"
         );
+        assert_eq!(
+            invocations.load(Ordering::SeqCst),
+            0,
+            "tool should not execute when model never emits a tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_warns_when_deferred_action_repeats_without_tool_call() {
+        let provider = ScriptedProvider::from_text_responses(vec![
+            "I'll check that right away.",
+            "Let me inspect that in detail now.",
+        ]);
+
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
+            "count_tool",
+            Arc::clone(&invocations),
+        ))];
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("please check the workspace"),
+        ];
+        let observer = NoopObserver;
+
+        let result = scope_deferred_action_policy(
+            crate::config::DeferredActionPolicy::Warn,
+            run_tool_call_loop(
+                &provider,
+                &mut history,
+                &tools_registry,
+                &observer,
+                "mock-provider",
+                "mock-model",
+                0.0,
+                true,
+                None,
+                "cli",
+                &crate::config::MultimodalConfig::default(),
+                5,
+                None,
+                None,
+                None,
+                &[],
+            ),
+        )
+        .await
+        .expect("warn policy should return text response");
+
+        assert_eq!(result, "Let me inspect that in detail now.");
+        assert_eq!(
+            invocations.load(Ordering::SeqCst),
+            0,
+            "tool should not execute when model never emits a tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_ignores_deferred_action_when_configured() {
+        let provider = ScriptedProvider::from_text_responses(vec![
+            "I'll check that right away.",
+            "Let me inspect that in detail now.",
+        ]);
+
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
+            "count_tool",
+            Arc::clone(&invocations),
+        ))];
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("please check the workspace"),
+        ];
+        let observer = NoopObserver;
+
+        let result = scope_deferred_action_policy(
+            crate::config::DeferredActionPolicy::Ignore,
+            run_tool_call_loop(
+                &provider,
+                &mut history,
+                &tools_registry,
+                &observer,
+                "mock-provider",
+                "mock-model",
+                0.0,
+                true,
+                None,
+                "cli",
+                &crate::config::MultimodalConfig::default(),
+                5,
+                None,
+                None,
+                None,
+                &[],
+            ),
+        )
+        .await
+        .expect("ignore policy should return first text response");
+
+        assert_eq!(result, "I'll check that right away.");
         assert_eq!(
             invocations.load(Ordering::SeqCst),
             0,
