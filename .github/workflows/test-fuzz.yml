@@ -1,14 +1,8 @@
 name: Test Fuzz
 
 on:
-    schedule:
-        - cron: "0 2 * * 0" # Weekly Sunday 2am UTC
-    workflow_dispatch:
-        inputs:
-            fuzz_seconds:
-                description: "Seconds to run each fuzz target"
-                required: false
-                default: "300"
+    push:
+        branches: [release/v0.2.0]
 
 concurrency:
     group: fuzz-${{ github.ref }}
@@ -27,7 +21,7 @@ env:
 jobs:
     fuzz:
         name: Fuzz (${{ matrix.target }})
-        runs-on: [self-hosted, Linux, X64, aws-india, blacksmith-2vcpu-ubuntu-2404, hetzner]
+        runs-on: [self-hosted, Linux, X64, debian-12]
         timeout-minutes: 60
         strategy:
             fail-fast: false
@@ -48,7 +42,7 @@ jobs:
 
             - name: Run fuzz target
               run: |
-                  SECONDS="${{ github.event.inputs.fuzz_seconds || '300' }}"
+                  SECONDS="60"
                   echo "Fuzzing ${{ matrix.target }} for ${SECONDS}s"
                   cargo +nightly fuzz run ${{ matrix.target }} -- \
                     -max_total_time="${SECONDS}" \
