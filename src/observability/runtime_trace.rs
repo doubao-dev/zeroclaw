@@ -57,6 +57,7 @@ struct RuntimeTraceLogger {
     path: PathBuf,
     redact: bool,
     store_raw: bool,
+    include_system_prompt: bool,
     write_lock: std::sync::Mutex<()>,
 }
 
@@ -67,6 +68,7 @@ impl RuntimeTraceLogger {
         path: PathBuf,
         redact: bool,
         store_raw: bool,
+        include_system_prompt: bool,
     ) -> Self {
         Self {
             mode,
@@ -74,6 +76,7 @@ impl RuntimeTraceLogger {
             path,
             redact,
             store_raw,
+            include_system_prompt,
             write_lock: std::sync::Mutex::new(()),
         }
     }
@@ -197,6 +200,7 @@ pub fn init_from_config(config: &ObservabilityConfig, workspace_dir: &Path) {
             resolve_trace_path(config, workspace_dir),
             config.runtime_trace_redact,
             config.runtime_trace_store_raw,
+            config.runtime_trace_include_system_prompt,
         )))
     };
 
@@ -219,6 +223,15 @@ pub fn store_raw_enabled() -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(|logger| logger.store_raw)
+        .unwrap_or(false)
+}
+
+pub fn include_system_prompt_enabled() -> bool {
+    TRACE_LOGGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|logger| logger.include_system_prompt)
         .unwrap_or(false)
 }
 
@@ -357,6 +370,7 @@ mod tests {
             runtime_trace_max_entries: 3,
             runtime_trace_redact: true,
             runtime_trace_store_raw: false,
+            runtime_trace_include_system_prompt: false,
         }
     }
 
@@ -395,7 +409,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
         let logger =
-            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone(), true, false);
+            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone(), true, false, false);
 
         for i in 0..5 {
             let event = RuntimeTraceEvent {
@@ -424,7 +438,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
         let logger =
-            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone(), true, false);
+            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone(), true, false, false);
 
         let target_id = "target-event";
         let event = RuntimeTraceEvent {

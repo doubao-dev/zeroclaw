@@ -1101,6 +1101,7 @@ pub async fn run_tool_call_loop(
     let turn_id = Uuid::new_v4().to_string();
     let runtime_trace_redact = runtime_trace::redact_enabled();
     let runtime_trace_store_raw = runtime_trace::store_raw_enabled();
+    let runtime_trace_include_system_prompt = runtime_trace::include_system_prompt_enabled();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut missing_tool_call_retry_used = false;
     let mut missing_tool_call_retry_prompt: Option<String> = None;
@@ -1134,6 +1135,41 @@ pub async fn run_tool_call_loop(
             Some(true),
             Some("consumed one-time non-cli allow-all approval token"),
             serde_json::json!({}),
+        );
+    }
+
+    if runtime_trace_include_system_prompt {
+        let system_prompt = history
+            .iter()
+            .filter(|msg| msg.role == "system")
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let system_prompt_for_trace = if runtime_trace_redact {
+            scrub_credentials(&system_prompt)
+        } else {
+            system_prompt.clone()
+        };
+        let mut payload = serde_json::json!({
+            "system_prompt": system_prompt_for_trace,
+        });
+        if runtime_trace_store_raw {
+            if let serde_json::Value::Object(ref mut obj) = payload {
+                obj.insert(
+                    "raw_system_prompt".to_string(),
+                    serde_json::Value::String(system_prompt),
+                );
+            }
+        }
+        runtime_trace::record_event(
+            "turn_system_prompt",
+            Some(channel_name),
+            Some(provider_name),
+            Some(active_model.as_str()),
+            Some(&turn_id),
+            Some(true),
+            None,
+            payload,
         );
     }
 

@@ -82,6 +82,7 @@ api_key = "sk-profile-key"
 | `runtime_trace_max_entries` | `200` | Maximum retained events when `runtime_trace_mode = "rolling"` |
 | `runtime_trace_redact` | `true` | Redact likely credentials from runtime trace payloads |
 | `runtime_trace_store_raw` | `false` | Store unredacted raw payloads alongside redacted fields |
+| `runtime_trace_include_system_prompt` | `false` | Record system prompt content into runtime traces |
 
 Notes:
 
@@ -106,6 +107,7 @@ runtime_trace_path = "state/runtime-trace.jsonl"
 runtime_trace_max_entries = 200
 runtime_trace_redact = true
 runtime_trace_store_raw = false
+runtime_trace_include_system_prompt = false
 ```
 
 ## Environment Provider Overrides

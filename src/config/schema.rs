@@ -3195,6 +3195,9 @@ pub struct ObservabilityConfig {
 
     #[serde(default = "default_runtime_trace_store_raw")]
     pub runtime_trace_store_raw: bool,
+
+    #[serde(default = "default_runtime_trace_include_system_prompt")]
+    pub runtime_trace_include_system_prompt: bool,
 }
 
 impl Default for ObservabilityConfig {
@@ -3208,6 +3211,7 @@ impl Default for ObservabilityConfig {
             runtime_trace_max_entries: default_runtime_trace_max_entries(),
             runtime_trace_redact: default_runtime_trace_redact(),
             runtime_trace_store_raw: default_runtime_trace_store_raw(),
+            runtime_trace_include_system_prompt: default_runtime_trace_include_system_prompt(),
         }
     }
 }
@@ -3229,6 +3233,10 @@ fn default_runtime_trace_redact() -> bool {
 }
 
 fn default_runtime_trace_store_raw() -> bool {
+    false
+}
+
+fn default_runtime_trace_include_system_prompt() -> bool {
     false
 }
 

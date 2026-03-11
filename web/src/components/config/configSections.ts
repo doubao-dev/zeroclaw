@@ -100,6 +100,7 @@ export const CONFIG_SECTIONS: SectionDef[] = [
       { key: 'runtime_trace_max_entries', label: 'Max Trace Entries', type: 'number', min: 1, defaultValue: 200, description: 'Default: 200' },
       { key: 'runtime_trace_redact', label: 'Redact Trace Payloads', type: 'toggle', defaultValue: true, description: 'Redact likely credentials from trace payloads' },
       { key: 'runtime_trace_store_raw', label: 'Store Raw Payloads', type: 'toggle', defaultValue: false, description: 'Store unredacted raw payloads alongside redacted fields' },
+      { key: 'runtime_trace_include_system_prompt', label: 'Include System Prompt', type: 'toggle', defaultValue: false, description: 'Record system prompt content into runtime traces' },
     ],
   },
 
