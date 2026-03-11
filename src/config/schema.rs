@@ -3189,6 +3189,12 @@ pub struct ObservabilityConfig {
     /// Maximum entries retained when runtime_trace_mode = "rolling".
     #[serde(default = "default_runtime_trace_max_entries")]
     pub runtime_trace_max_entries: usize,
+
+    #[serde(default = "default_runtime_trace_redact")]
+    pub runtime_trace_redact: bool,
+
+    #[serde(default = "default_runtime_trace_store_raw")]
+    pub runtime_trace_store_raw: bool,
 }
 
 impl Default for ObservabilityConfig {
@@ -3200,6 +3206,8 @@ impl Default for ObservabilityConfig {
             runtime_trace_mode: default_runtime_trace_mode(),
             runtime_trace_path: default_runtime_trace_path(),
             runtime_trace_max_entries: default_runtime_trace_max_entries(),
+            runtime_trace_redact: default_runtime_trace_redact(),
+            runtime_trace_store_raw: default_runtime_trace_store_raw(),
         }
     }
 }
@@ -3214,6 +3222,14 @@ fn default_runtime_trace_path() -> String {
 
 fn default_runtime_trace_max_entries() -> usize {
     200
+}
+
+fn default_runtime_trace_redact() -> bool {
+    true
+}
+
+fn default_runtime_trace_store_raw() -> bool {
+    false
 }
 
 // ── Hooks ────────────────────────────────────────────────────────

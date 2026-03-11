@@ -1099,6 +1099,8 @@ pub async fn run_tool_call_loop(
         .collect();
     let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
     let turn_id = Uuid::new_v4().to_string();
+    let runtime_trace_redact = runtime_trace::redact_enabled();
+    let runtime_trace_store_raw = runtime_trace::store_raw_enabled();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut missing_tool_call_retry_used = false;
     let mut missing_tool_call_retry_prompt: Option<String> = None;
@@ -1639,14 +1641,27 @@ pub async fn run_tool_call_loop(
                         Some(&turn_id),
                         Some(false),
                         Some(parse_issue),
-                        serde_json::json!({
-                            "iteration": iteration + 1,
-                            "invalid_native_tool_json_count": invalid_native_tool_json_count,
-                            "response_excerpt": truncate_with_ellipsis(
-                                &scrub_credentials(&response_text),
-                                600
-                            ),
-                        }),
+                        {
+                            let response_text_for_trace = if runtime_trace_redact {
+                                scrub_credentials(&response_text)
+                            } else {
+                                response_text.clone()
+                            };
+                            let mut payload = serde_json::json!({
+                                "iteration": iteration + 1,
+                                "invalid_native_tool_json_count": invalid_native_tool_json_count,
+                                "response_excerpt": truncate_with_ellipsis(&response_text_for_trace, 600),
+                            });
+                            if runtime_trace_store_raw {
+                                if let serde_json::Value::Object(ref mut obj) = payload {
+                                    obj.insert(
+                                        "raw_response_unredacted".to_string(),
+                                        serde_json::Value::String(response_text.clone()),
+                                    );
+                                }
+                            }
+                            payload
+                        },
                     );
                 }
 
@@ -1658,18 +1673,34 @@ pub async fn run_tool_call_loop(
                     Some(&turn_id),
                     Some(true),
                     None,
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "duration_ms": llm_started_at.elapsed().as_millis(),
-                        "input_tokens": resp_input_tokens,
-                        "output_tokens": resp_output_tokens,
-                        "raw_response": scrub_credentials(&response_text),
-                        "native_tool_calls": native_calls.len(),
-                        "parsed_tool_calls": calls.len(),
-                        "continuation_attempts": continuation_attempts,
-                        "stop_reason": stop_reason.as_ref().map(stop_reason_name),
-                        "raw_stop_reason": raw_stop_reason,
-                    }),
+                    {
+                        let response_for_trace = if runtime_trace_redact {
+                            scrub_credentials(&response_text)
+                        } else {
+                            response_text.clone()
+                        };
+                        let mut payload = serde_json::json!({
+                            "iteration": iteration + 1,
+                            "duration_ms": llm_started_at.elapsed().as_millis(),
+                            "input_tokens": resp_input_tokens,
+                            "output_tokens": resp_output_tokens,
+                            "raw_response": response_for_trace,
+                            "native_tool_calls": native_calls.len(),
+                            "parsed_tool_calls": calls.len(),
+                            "continuation_attempts": continuation_attempts,
+                            "stop_reason": stop_reason.as_ref().map(stop_reason_name),
+                            "raw_stop_reason": raw_stop_reason,
+                        });
+                        if runtime_trace_store_raw {
+                            if let serde_json::Value::Object(ref mut obj) = payload {
+                                obj.insert(
+                                    "raw_response_unredacted".to_string(),
+                                    serde_json::Value::String(response_text.clone()),
+                                );
+                            }
+                        }
+                        payload
+                    },
                 );
 
                 // Preserve native tool call IDs in assistant history so role=tool
@@ -1780,11 +1811,27 @@ pub async fn run_tool_call_loop(
                     Some(&turn_id),
                     Some(true),
                     Some("llm response implied follow-up action but emitted no tool call"),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "reason": retry_reason,
-                        "response_excerpt": truncate_with_ellipsis(&scrub_credentials(&display_text), 600),
-                    }),
+                    {
+                        let response_text_for_trace = if runtime_trace_redact {
+                            scrub_credentials(&display_text)
+                        } else {
+                            display_text.clone()
+                        };
+                        let mut payload = serde_json::json!({
+                            "iteration": iteration + 1,
+                            "reason": retry_reason,
+                            "response_excerpt": truncate_with_ellipsis(&response_text_for_trace, 600),
+                        });
+                        if runtime_trace_store_raw {
+                            if let serde_json::Value::Object(ref mut obj) = payload {
+                                obj.insert(
+                                    "raw_text".to_string(),
+                                    serde_json::Value::String(display_text.clone()),
+                                );
+                            }
+                        }
+                        payload
+                    },
                 );
 
                 if should_emit_verbose_progress(progress_mode) {
@@ -1809,10 +1856,26 @@ pub async fn run_tool_call_loop(
                     Some(&turn_id),
                     Some(false),
                     Some("llm response still implied follow-up action but emitted no tool call after retry"),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "response_excerpt": truncate_with_ellipsis(&scrub_credentials(&display_text), 600),
-                    }),
+                    {
+                        let response_text_for_trace = if runtime_trace_redact {
+                            scrub_credentials(&display_text)
+                        } else {
+                            display_text.clone()
+                        };
+                        let mut payload = serde_json::json!({
+                            "iteration": iteration + 1,
+                            "response_excerpt": truncate_with_ellipsis(&response_text_for_trace, 600),
+                        });
+                        if runtime_trace_store_raw {
+                            if let serde_json::Value::Object(ref mut obj) = payload {
+                                obj.insert(
+                                    "raw_text".to_string(),
+                                    serde_json::Value::String(display_text.clone()),
+                                );
+                            }
+                        }
+                        payload
+                    },
                 );
                 let policy = DEFERRED_ACTION_POLICY
                     .try_with(|p| *p)
@@ -1835,10 +1898,26 @@ pub async fn run_tool_call_loop(
                 Some(&turn_id),
                 Some(true),
                 None,
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "text": scrub_credentials(&display_text),
-                }),
+                {
+                    let text_for_trace = if runtime_trace_redact {
+                        scrub_credentials(&display_text)
+                    } else {
+                        display_text.clone()
+                    };
+                    let mut payload = serde_json::json!({
+                        "iteration": iteration + 1,
+                        "text": text_for_trace,
+                    });
+                    if runtime_trace_store_raw {
+                        if let serde_json::Value::Object(ref mut obj) = payload {
+                            obj.insert(
+                                "raw_text".to_string(),
+                                serde_json::Value::String(display_text.clone()),
+                            );
+                        }
+                    }
+                    payload
+                },
             );
             // No tool calls — this is the final response.
             // If a streaming sender is provided, relay the text in small chunks
@@ -1911,11 +1990,26 @@ pub async fn run_tool_call_loop(
                             Some(&turn_id),
                             Some(false),
                             Some(&cancelled),
-                            serde_json::json!({
-                                "iteration": iteration + 1,
-                                "tool": call.name,
-                                "arguments": scrub_credentials(&tool_args.to_string()),
-                            }),
+                            {
+                                let args_raw = tool_args.clone();
+                                let args_string = tool_args.to_string();
+                                let args_for_trace = if runtime_trace_redact {
+                                    scrub_credentials(&args_string)
+                                } else {
+                                    args_string
+                                };
+                                let mut payload = serde_json::json!({
+                                    "iteration": iteration + 1,
+                                    "tool": call.name,
+                                    "arguments": args_for_trace,
+                                });
+                                if runtime_trace_store_raw {
+                                    if let serde_json::Value::Object(ref mut obj) = payload {
+                                        obj.insert("raw_arguments".to_string(), args_raw);
+                                    }
+                                }
+                                payload
+                            },
                         );
                         ordered_results[idx] = Some((
                             call.name.clone(),
@@ -1953,12 +2047,27 @@ pub async fn run_tool_call_loop(
                     Some(&turn_id),
                     Some(false),
                     Some(&blocked),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "tool": tool_name.clone(),
-                        "arguments": scrub_credentials(&tool_args.to_string()),
-                        "blocked_by_channel_policy": true,
-                    }),
+                    {
+                        let args_raw = tool_args.clone();
+                        let args_string = tool_args.to_string();
+                        let args_for_trace = if runtime_trace_redact {
+                            scrub_credentials(&args_string)
+                        } else {
+                            args_string
+                        };
+                        let mut payload = serde_json::json!({
+                            "iteration": iteration + 1,
+                            "tool": tool_name.clone(),
+                            "arguments": args_for_trace,
+                            "blocked_by_channel_policy": true,
+                        });
+                        if runtime_trace_store_raw {
+                            if let serde_json::Value::Object(ref mut obj) = payload {
+                                obj.insert("raw_arguments".to_string(), args_raw);
+                            }
+                        }
+                        payload
+                    },
                 );
                 ordered_results[idx] = Some((
                     tool_name.clone(),
@@ -2050,11 +2159,26 @@ pub async fn run_tool_call_loop(
                             Some(&turn_id),
                             Some(false),
                             Some(&denied),
-                            serde_json::json!({
-                                "iteration": iteration + 1,
-                                "tool": tool_name.clone(),
-                                "arguments": scrub_credentials(&tool_args.to_string()),
-                            }),
+                            {
+                                let args_raw = tool_args.clone();
+                                let args_string = tool_args.to_string();
+                                let args_for_trace = if runtime_trace_redact {
+                                    scrub_credentials(&args_string)
+                                } else {
+                                    args_string
+                                };
+                                let mut payload = serde_json::json!({
+                                    "iteration": iteration + 1,
+                                    "tool": tool_name.clone(),
+                                    "arguments": args_for_trace,
+                                });
+                                if runtime_trace_store_raw {
+                                    if let serde_json::Value::Object(ref mut obj) = payload {
+                                        obj.insert("raw_arguments".to_string(), args_raw);
+                                    }
+                                }
+                                payload
+                            },
                         );
                         ordered_results[idx] = Some((
                             tool_name.clone(),
@@ -2084,12 +2208,27 @@ pub async fn run_tool_call_loop(
                     Some(&turn_id),
                     Some(false),
                     Some(&duplicate),
-                    serde_json::json!({
-                        "iteration": iteration + 1,
-                        "tool": tool_name.clone(),
-                        "arguments": scrub_credentials(&tool_args.to_string()),
-                        "deduplicated": true,
-                    }),
+                    {
+                        let args_raw = tool_args.clone();
+                        let args_string = tool_args.to_string();
+                        let args_for_trace = if runtime_trace_redact {
+                            scrub_credentials(&args_string)
+                        } else {
+                            args_string
+                        };
+                        let mut payload = serde_json::json!({
+                            "iteration": iteration + 1,
+                            "tool": tool_name.clone(),
+                            "arguments": args_for_trace,
+                            "deduplicated": true,
+                        });
+                        if runtime_trace_store_raw {
+                            if let serde_json::Value::Object(ref mut obj) = payload {
+                                obj.insert("raw_arguments".to_string(), args_raw);
+                            }
+                        }
+                        payload
+                    },
                 );
                 ordered_results[idx] = Some((
                     tool_name.clone(),
@@ -2112,11 +2251,26 @@ pub async fn run_tool_call_loop(
                 Some(&turn_id),
                 None,
                 None,
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "tool": tool_name.clone(),
-                    "arguments": scrub_credentials(&tool_args.to_string()),
-                }),
+                {
+                    let args_raw = tool_args.clone();
+                    let args_string = tool_args.to_string();
+                    let args_for_trace = if runtime_trace_redact {
+                        scrub_credentials(&args_string)
+                    } else {
+                        args_string
+                    };
+                    let mut payload = serde_json::json!({
+                        "iteration": iteration + 1,
+                        "tool": tool_name.clone(),
+                        "arguments": args_for_trace,
+                    });
+                    if runtime_trace_store_raw {
+                        if let serde_json::Value::Object(ref mut obj) = payload {
+                            obj.insert("raw_arguments".to_string(), args_raw);
+                        }
+                    }
+                    payload
+                },
             );
 
             let progress_idx = if should_emit_tool_progress(progress_mode) {
@@ -2172,12 +2326,28 @@ pub async fn run_tool_call_loop(
                 Some(&turn_id),
                 Some(outcome.success),
                 outcome.error_reason.as_deref(),
-                serde_json::json!({
-                    "iteration": iteration + 1,
-                    "tool": call.name.clone(),
-                    "duration_ms": outcome.duration.as_millis(),
-                    "output": scrub_credentials(&outcome.output),
-                }),
+                {
+                    let output_for_trace = if runtime_trace_redact {
+                        scrub_credentials(&outcome.output)
+                    } else {
+                        outcome.output.clone()
+                    };
+                    let mut payload = serde_json::json!({
+                        "iteration": iteration + 1,
+                        "tool": call.name.clone(),
+                        "duration_ms": outcome.duration.as_millis(),
+                        "output": output_for_trace,
+                    });
+                    if runtime_trace_store_raw {
+                        if let serde_json::Value::Object(ref mut obj) = payload {
+                            obj.insert(
+                                "raw_output".to_string(),
+                                serde_json::Value::String(outcome.output.clone()),
+                            );
+                        }
+                    }
+                    payload
+                },
             );
 
             // ── Hook: after_tool_call (void) ─────────────────

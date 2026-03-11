@@ -55,15 +55,25 @@ struct RuntimeTraceLogger {
     mode: RuntimeTraceStorageMode,
     max_entries: usize,
     path: PathBuf,
+    redact: bool,
+    store_raw: bool,
     write_lock: std::sync::Mutex<()>,
 }
 
 impl RuntimeTraceLogger {
-    fn new(mode: RuntimeTraceStorageMode, max_entries: usize, path: PathBuf) -> Self {
+    fn new(
+        mode: RuntimeTraceStorageMode,
+        max_entries: usize,
+        path: PathBuf,
+        redact: bool,
+        store_raw: bool,
+    ) -> Self {
         Self {
             mode,
             max_entries: max_entries.max(1),
             path,
+            redact,
+            store_raw,
             write_lock: std::sync::Mutex::new(()),
         }
     }
@@ -185,11 +195,31 @@ pub fn init_from_config(config: &ObservabilityConfig, workspace_dir: &Path) {
             mode,
             config.runtime_trace_max_entries.max(1),
             resolve_trace_path(config, workspace_dir),
+            config.runtime_trace_redact,
+            config.runtime_trace_store_raw,
         )))
     };
 
     let mut guard = TRACE_LOGGER.write().unwrap_or_else(|e| e.into_inner());
     *guard = logger;
+}
+
+pub fn redact_enabled() -> bool {
+    TRACE_LOGGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|logger| logger.redact)
+        .unwrap_or(true)
+}
+
+pub fn store_raw_enabled() -> bool {
+    TRACE_LOGGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|logger| logger.store_raw)
+        .unwrap_or(false)
 }
 
 /// Record a runtime trace event.
@@ -325,6 +355,8 @@ mod tests {
             runtime_trace_mode: "rolling".to_string(),
             runtime_trace_path: "state/runtime-trace.jsonl".to_string(),
             runtime_trace_max_entries: 3,
+            runtime_trace_redact: true,
+            runtime_trace_store_raw: false,
         }
     }
 
@@ -362,7 +394,8 @@ mod tests {
     fn rolling_mode_keeps_latest_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
-        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone());
+        let logger =
+            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone(), true, false);
 
         for i in 0..5 {
             let event = RuntimeTraceEvent {
@@ -390,7 +423,8 @@ mod tests {
     fn find_event_by_id_returns_match() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
-        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone());
+        let logger =
+            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone(), true, false);
 
         let target_id = "target-event";
         let event = RuntimeTraceEvent {

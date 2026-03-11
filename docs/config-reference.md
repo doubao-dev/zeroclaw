@@ -80,12 +80,15 @@ api_key = "sk-profile-key"
 | `runtime_trace_mode` | `none` | Runtime trace storage mode: `none`, `rolling`, or `full` |
 | `runtime_trace_path` | `state/runtime-trace.jsonl` | Runtime trace JSONL path (relative to workspace unless absolute) |
 | `runtime_trace_max_entries` | `200` | Maximum retained events when `runtime_trace_mode = "rolling"` |
+| `runtime_trace_redact` | `true` | Redact likely credentials from runtime trace payloads |
+| `runtime_trace_store_raw` | `false` | Store unredacted raw payloads alongside redacted fields |
 
 Notes:
 
 - `backend = "otel"` uses OTLP HTTP export with a blocking exporter client so spans and metrics can be emitted safely from non-Tokio contexts.
 - Alias values `opentelemetry` and `otlp` map to the same OTel backend.
 - Runtime traces are intended for debugging tool-call failures and malformed model tool payloads. They can contain model output text, so keep this disabled by default on shared hosts.
+- `runtime_trace_store_raw = true` can capture secrets/tokens in plaintext. Only enable in locked-down environments and rotate/delete traces after debugging.
 - Query runtime traces with:
   - `zeroclaw doctor traces --limit 20`
   - `zeroclaw doctor traces --event tool_call_result --contains \"error\"`
@@ -101,6 +104,8 @@ otel_service_name = "zeroclaw"
 runtime_trace_mode = "rolling"
 runtime_trace_path = "state/runtime-trace.jsonl"
 runtime_trace_max_entries = 200
+runtime_trace_redact = true
+runtime_trace_store_raw = false
 ```
 
 ## Environment Provider Overrides
