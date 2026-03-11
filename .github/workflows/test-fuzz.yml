@@ -19,6 +19,50 @@ env:
     CARGO_TERM_COLOR: always
 
 jobs:
+    build-release-lark:
+        name: Build Release (zeroclaw + channel-lark)
+        runs-on: [self-hosted, Linux, X64, debian-12]
+        timeout-minutes: 90
+        steps:
+            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+            - name: Self-heal Rust toolchain cache
+              shell: bash
+              run: ./scripts/ci/self_heal_rust_toolchain.sh 1.92.0
+
+            - name: Ensure C toolchain
+              shell: bash
+              run: bash ./scripts/ci/ensure_c_toolchain.sh
+
+            - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+              with:
+                  toolchain: 1.92.0
+
+            - name: Ensure C toolchain for Rust builds
+              shell: bash
+              run: bash ./scripts/ci/ensure_cc.sh
+
+            - name: Ensure cargo component
+              shell: bash
+              run: bash ./scripts/ci/ensure_cargo_component.sh 1.92.0
+
+            - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v3
+              with:
+                  prefix-key: fuzz-build-release
+                  cache-bin: false
+
+            - name: Build release binary (channel-lark)
+              shell: bash
+              run: cargo build --release --locked --features channel-lark --bin zeroclaw
+
+            - name: Upload release artifact
+              uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+              with:
+                  name: zeroclaw-linux-debian12-release-channel-lark-${{ github.sha }}
+                  path: target/release/zeroclaw
+                  if-no-files-found: error
+                  retention-days: 14
+
     fuzz:
         name: Fuzz (${{ matrix.target }})
         runs-on: [self-hosted, Linux, X64, debian-12]
