@@ -486,21 +486,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Strin
         history.push(ChatMessage::user(&content));
         persist_ws_history(&state, &session_id, &history).await;
 
-        // Get provider info
-        let provider_label = state
-            .config
-            .lock()
-            .default_provider
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        // Broadcast agent_start event
-        let _ = state.event_tx.send(serde_json::json!({
-            "type": "agent_start",
-            "provider": provider_label,
-            "model": state.model,
-        }));
-
         // Full agentic loop with tools (includes WASM skills, shell, memory, etc.)
         match super::run_gateway_chat_with_tools(&state, &content, Some(&ws_session_id)).await {
             Ok(response) => {
@@ -521,13 +506,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Strin
                     "full_response": safe_response,
                 });
                 let _ = socket.send(Message::Text(done.to_string().into())).await;
-
-                // Broadcast agent_end event
-                let _ = state.event_tx.send(serde_json::json!({
-                    "type": "agent_end",
-                    "provider": provider_label,
-                    "model": state.model,
-                }));
             }
             Err(e) => {
                 let sanitized = crate::providers::sanitize_api_error(&e.to_string());

@@ -3108,19 +3108,20 @@ pub async fn run(
 /// Process a single message through the full agent (with tools, peripherals, memory).
 /// Used by channels (Telegram, Discord, etc.) to enable hardware and tool use.
 pub async fn process_message(config: Config, message: &str) -> Result<String> {
-    process_message_with_session(config, message, None).await
+    process_message_with_session(config, message, None, None).await
 }
 
 pub async fn process_message_with_session(
     config: Config,
     message: &str,
     session_id: Option<&str>,
+    observer_override: Option<Arc<dyn Observer>>,
 ) -> Result<String> {
     if let Err(error) = crate::plugins::runtime::initialize_from_config(&config.plugins) {
         tracing::warn!("plugin registry initialization skipped: {error}");
     }
-    let base_observer: Arc<dyn Observer> =
-        Arc::from(observability::create_observer(&config.observability));
+    let base_observer: Arc<dyn Observer> = observer_override
+        .unwrap_or_else(|| Arc::from(observability::create_observer(&config.observability)));
     let observer: Arc<dyn Observer> = Arc::new(
         crate::plugins::bridge::observer::ObserverBridge::new(base_observer),
     );

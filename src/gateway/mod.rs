@@ -1099,7 +1099,7 @@ pub(super) async fn run_gateway_chat_with_tools(
     session_id: Option<&str>,
 ) -> anyhow::Result<String> {
     let config = state.config.lock().clone();
-    crate::agent::process_message_with_session(config, message, session_id).await
+    crate::agent::process_message_with_session(config, message, session_id, Some(Arc::clone(&state.observer))).await
 }
 
 fn gateway_outbound_leak_guard_snapshot(
