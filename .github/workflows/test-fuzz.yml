@@ -10,7 +10,6 @@ concurrency:
 
 permissions:
     contents: read
-    issues: write
 
 env:
     GIT_CONFIG_COUNT: "1"
@@ -21,7 +20,7 @@ env:
 jobs:
     build-release-lark:
         name: Build Release (zeroclaw + channel-lark)
-        runs-on: [self-hosted, Linux, X64, debian-12]
+        runs-on: ubuntu-latest
         timeout-minutes: 90
         steps:
             - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -58,14 +57,14 @@ jobs:
             - name: Upload release artifact
               uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
               with:
-                  name: zeroclaw-linux-debian12-release-channel-lark-${{ github.sha }}
+                  name: zeroclaw-linux-ubuntu-latest-release-channel-lark-${{ github.sha }}
                   path: target/release/zeroclaw
                   if-no-files-found: error
                   retention-days: 14
 
     fuzz:
         name: Fuzz (${{ matrix.target }})
-        runs-on: [self-hosted, Linux, X64, debian-12]
+        runs-on: ubuntu-latest
         timeout-minutes: 60
         strategy:
             fail-fast: false
