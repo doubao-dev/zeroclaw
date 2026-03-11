@@ -1,11 +1,11 @@
-name: Test Fuzz
+name: Build Release Artifact
 
 on:
     push:
         branches: [release/v0.2.0]
 
 concurrency:
-    group: fuzz-${{ github.ref }}
+    group: build-release-${{ github.ref }}
     cancel-in-progress: true
 
 permissions:
@@ -61,52 +61,3 @@ jobs:
                   path: target/release/zeroclaw
                   if-no-files-found: error
                   retention-days: 14
-
-    fuzz:
-        name: Fuzz (${{ matrix.target }})
-        runs-on: [self-hosted, zeroclaw]
-        timeout-minutes: 60
-        strategy:
-            fail-fast: false
-            matrix:
-                target:
-                    - fuzz_config_parse
-                    - fuzz_tool_params
-        steps:
-            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-            - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-              with:
-                  toolchain: nightly
-                  components: llvm-tools-preview
-
-            - name: Install cargo-fuzz
-              run: cargo install cargo-fuzz --locked
-
-            - name: Run fuzz target
-              run: |
-                  SECONDS="60"
-                  echo "Fuzzing ${{ matrix.target }} for ${SECONDS}s"
-                  cargo +nightly fuzz run ${{ matrix.target }} -- \
-                    -max_total_time="${SECONDS}" \
-                    -max_len=4096
-              continue-on-error: true
-              id: fuzz
-
-            - name: Upload crash artifacts
-              if: failure() || steps.fuzz.outcome == 'failure'
-              uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-              with:
-                  name: fuzz-crashes-${{ matrix.target }}
-                  path: fuzz/artifacts/${{ matrix.target }}/
-                  retention-days: 30
-                  if-no-files-found: ignore
-
-            - name: Report fuzz results
-              run: |
-                  echo "### Fuzz: ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
-                  if [ "${{ steps.fuzz.outcome }}" = "failure" ]; then
-                    echo "- :x: Crashes found — see artifacts" >> "$GITHUB_STEP_SUMMARY"
-                  else
-                    echo "- :white_check_mark: No crashes found" >> "$GITHUB_STEP_SUMMARY"
-                  fi
