@@ -1082,11 +1082,23 @@ pub struct AgentConfig {
 
     #[serde(default)]
     pub deferred_action_policy: DeferredActionPolicy,
+
+    #[serde(default)]
+    pub empty_response_policy: EmptyResponsePolicy,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeferredActionPolicy {
+    #[default]
+    Error,
+    Warn,
+    Ignore,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EmptyResponsePolicy {
     #[default]
     Error,
     Warn,
@@ -1199,6 +1211,7 @@ impl Default for AgentConfig {
             safety_heartbeat_interval: default_safety_heartbeat_interval(),
             safety_heartbeat_turn_interval: default_safety_heartbeat_turn_interval(),
             deferred_action_policy: DeferredActionPolicy::default(),
+            empty_response_policy: EmptyResponsePolicy::default(),
         }
     }
 }

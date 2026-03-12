@@ -375,6 +375,11 @@ export const CONFIG_SECTIONS: SectionDef[] = [
         { value: 'sequential', label: 'Sequential' },
         { value: 'parallel', label: 'Parallel' },
       ]},
+      { key: 'empty_response_policy', label: 'Empty Response Policy', type: 'select', defaultValue: 'error', options: [
+        { value: 'error', label: 'Error' },
+        { value: 'warn', label: 'Warn' },
+        { value: 'ignore', label: 'Ignore' },
+      ]},
     ],
   },
 

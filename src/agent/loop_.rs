@@ -292,6 +292,7 @@ const AUTO_CRON_DELIVERY_CHANNELS: &[&str] = &[
 const NON_CLI_APPROVAL_WAIT_TIMEOUT_SECS: u64 = 300;
 const NON_CLI_APPROVAL_POLL_INTERVAL_MS: u64 = 250;
 const MISSING_TOOL_CALL_RETRY_PROMPT: &str = "Internal correction: your last reply indicated you were about to take an action, but no valid tool call was emitted. If a tool is needed, emit it now using the required <tool_call>...</tool_call> format. If no tool is needed, provide the complete final answer now and do not defer action.";
+const EMPTY_RESPONSE_RETRY_PROMPT: &str = "Internal correction: your last reply was empty. Provide a complete final answer now. If a tool is needed, call it using the runtime's required tool calling mechanism.";
 
 #[derive(Debug, Clone)]
 pub(crate) struct NonCliApprovalPrompt {
@@ -314,6 +315,7 @@ tokio::task_local! {
     static TOOL_LOOP_PROGRESS_MODE: ProgressMode;
     static TOOL_LOOP_COST_ENFORCEMENT_CONTEXT: Option<CostEnforcementContext>;
     static DEFERRED_ACTION_POLICY: crate::config::DeferredActionPolicy;
+    static EMPTY_RESPONSE_POLICY: crate::config::EmptyResponsePolicy;
 }
 
 /// Configuration for periodic safety-constraint re-injection (heartbeat).
@@ -383,6 +385,16 @@ where
     F: Future,
 {
     DEFERRED_ACTION_POLICY.scope(policy, future).await
+}
+
+pub(crate) async fn scope_empty_response_policy<F>(
+    policy: crate::config::EmptyResponsePolicy,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    EMPTY_RESPONSE_POLICY.scope(policy, future).await
 }
 
 fn should_inject_safety_heartbeat(counter: usize, interval: usize) -> bool {
@@ -1105,6 +1117,8 @@ pub async fn run_tool_call_loop(
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut missing_tool_call_retry_used = false;
     let mut missing_tool_call_retry_prompt: Option<String> = None;
+    let mut empty_response_retry_used = false;
+    let mut empty_response_retry_prompt: Option<String> = None;
     let ld_config = LOOP_DETECTION_CONFIG
         .try_with(Clone::clone)
         .unwrap_or_default();
@@ -1203,6 +1217,9 @@ pub async fn run_tool_call_loop(
         .await?;
         let mut request_messages = prepared_messages.messages.clone();
         if let Some(prompt) = missing_tool_call_retry_prompt.take() {
+            request_messages.push(ChatMessage::user(prompt));
+        }
+        if let Some(prompt) = empty_response_retry_prompt.take() {
             request_messages.push(ChatMessage::user(prompt));
         }
         if let Some(prompt) = loop_detection_prompt.take() {
@@ -1797,7 +1814,7 @@ pub async fn run_tool_call_loop(
             }
         };
 
-        let display_text = if parsed_text.is_empty() {
+        let mut display_text = if parsed_text.is_empty() {
             response_text.clone()
         } else {
             parsed_text
@@ -1822,6 +1839,57 @@ pub async fn run_tool_call_loop(
             let deferred_action_policy = DEFERRED_ACTION_POLICY
                 .try_with(|p| *p)
                 .unwrap_or(crate::config::DeferredActionPolicy::Error);
+            let empty_response_policy = EMPTY_RESPONSE_POLICY
+                .try_with(|p| *p)
+                .unwrap_or(crate::config::EmptyResponsePolicy::Error);
+            let empty_response_signal = display_text.trim().is_empty();
+            if empty_response_signal && empty_response_policy != crate::config::EmptyResponsePolicy::Ignore
+            {
+                if !empty_response_retry_used && iteration + 1 < max_iterations {
+                    empty_response_retry_used = true;
+                    empty_response_retry_prompt = Some(EMPTY_RESPONSE_RETRY_PROMPT.to_string());
+                    runtime_trace::record_event(
+                        "empty_response_retry",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(active_model.as_str()),
+                        Some(&turn_id),
+                        Some(true),
+                        Some("llm returned empty response; retrying once"),
+                        serde_json::json!({
+                            "iteration": iteration + 1,
+                        }),
+                    );
+                    if should_emit_verbose_progress(progress_mode) {
+                        if let Some(ref tx) = on_delta {
+                            let _ = tx
+                                .send(format!(
+                                    "{DRAFT_PROGRESS_SENTINEL}\u{21bb} Retrying: empty response\n"
+                                ))
+                                .await;
+                        }
+                    }
+                    continue;
+                }
+
+                runtime_trace::record_event(
+                    "empty_response_followthrough_failed",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(active_model.as_str()),
+                    Some(&turn_id),
+                    Some(false),
+                    Some("llm returned empty response after retry"),
+                    serde_json::json!({
+                        "iteration": iteration + 1,
+                    }),
+                );
+                if empty_response_policy == crate::config::EmptyResponsePolicy::Error {
+                    anyhow::bail!("Provider returned empty response; refusing to send blank reply.");
+                }
+                tracing::warn!("Provider returned empty response; returning placeholder text.");
+                display_text = "Provider returned empty response.".to_string();
+            }
             let missing_tool_call_signal = deferred_action_policy
                 != crate::config::DeferredActionPolicy::Ignore
                 && (parse_issue_detected
@@ -3015,27 +3083,30 @@ pub async fn run(
             cost_enforcement_context.clone(),
             scope_deferred_action_policy(
                 config.agent.deferred_action_policy,
-                SAFETY_HEARTBEAT_CONFIG.scope(
-                    hb_cfg,
-                    LOOP_DETECTION_CONFIG.scope(
-                        ld_cfg,
-                        run_tool_call_loop(
-                            provider.as_ref(),
-                            &mut history,
-                            &tools_registry,
-                            observer.as_ref(),
-                            provider_name,
-                            &model_name,
-                            temperature,
-                            false,
-                            approval_manager.as_ref(),
-                            channel_name,
-                            &config.multimodal,
-                            config.agent.max_tool_iterations,
-                            None,
-                            None,
-                            effective_hooks,
-                            &[],
+                scope_empty_response_policy(
+                    config.agent.empty_response_policy,
+                    SAFETY_HEARTBEAT_CONFIG.scope(
+                        hb_cfg,
+                        LOOP_DETECTION_CONFIG.scope(
+                            ld_cfg,
+                            run_tool_call_loop(
+                                provider.as_ref(),
+                                &mut history,
+                                &tools_registry,
+                                observer.as_ref(),
+                                provider_name,
+                                &model_name,
+                                temperature,
+                                false,
+                                approval_manager.as_ref(),
+                                channel_name,
+                                &config.multimodal,
+                                config.agent.max_tool_iterations,
+                                None,
+                                None,
+                                effective_hooks,
+                                &[],
+                            ),
                         ),
                     ),
                 ),
@@ -3203,27 +3274,30 @@ pub async fn run(
                 cost_enforcement_context.clone(),
                 scope_deferred_action_policy(
                     config.agent.deferred_action_policy,
-                    SAFETY_HEARTBEAT_CONFIG.scope(
-                        hb_cfg,
-                        LOOP_DETECTION_CONFIG.scope(
-                            ld_cfg,
-                            run_tool_call_loop(
-                                provider.as_ref(),
-                                &mut history,
-                                &tools_registry,
-                                observer.as_ref(),
-                                provider_name,
-                                &model_name,
-                                temperature,
-                                false,
-                                approval_manager.as_ref(),
-                                channel_name,
-                                &config.multimodal,
-                                config.agent.max_tool_iterations,
-                                None,
-                                None,
-                                effective_hooks,
-                                &[],
+                    scope_empty_response_policy(
+                        config.agent.empty_response_policy,
+                        SAFETY_HEARTBEAT_CONFIG.scope(
+                            hb_cfg,
+                            LOOP_DETECTION_CONFIG.scope(
+                                ld_cfg,
+                                run_tool_call_loop(
+                                    provider.as_ref(),
+                                    &mut history,
+                                    &tools_registry,
+                                    observer.as_ref(),
+                                    provider_name,
+                                    &model_name,
+                                    temperature,
+                                    false,
+                                    approval_manager.as_ref(),
+                                    channel_name,
+                                    &config.multimodal,
+                                    config.agent.max_tool_iterations,
+                                    None,
+                                    None,
+                                    effective_hooks,
+                                    &[],
+                                ),
                             ),
                         ),
                     ),
@@ -4775,6 +4849,41 @@ mod tests {
             1,
             "the fallback retry should lead to an actual tool execution"
         );
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_retries_once_when_response_is_empty() {
+        let provider = ScriptedProvider::from_text_responses(vec!["", "ok"]);
+
+        let tools_registry: Vec<Box<dyn Tool>> = vec![];
+        let mut history = vec![ChatMessage::system("test-system"), ChatMessage::user("hello")];
+        let observer = NoopObserver;
+
+        let result = scope_empty_response_policy(
+            crate::config::EmptyResponsePolicy::Error,
+            run_tool_call_loop(
+                &provider,
+                &mut history,
+                &tools_registry,
+                &observer,
+                "mock-provider",
+                "mock-model",
+                0.0,
+                true,
+                None,
+                "cli",
+                &crate::config::MultimodalConfig::default(),
+                3,
+                None,
+                None,
+                None,
+                &[],
+            ),
+        )
+        .await
+        .expect("loop should recover after one empty response");
+
+        assert_eq!(result, "ok");
     }
 
     #[tokio::test]

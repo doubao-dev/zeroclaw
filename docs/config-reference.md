@@ -140,6 +140,7 @@ Operational note for container users:
 | `loop_detection_ping_pong_cycles` | `2` | A→B→A→B alternating pattern cycle count threshold. `0` disables |
 | `loop_detection_failure_streak` | `3` | Same tool consecutive failure count threshold. `0` disables |
 | `deferred_action_policy` | `error` | Behavior when model repeats “will act” without emitting a verifiable tool call: `error` hard-fails, `warn` returns the text response, `ignore` disables follow-through detection |
+| `empty_response_policy` | `error` | Behavior when model returns an empty response: `error` retries once then fails, `warn` retries once then returns a placeholder message, `ignore` disables empty-response retry |
 
 Notes:
 
