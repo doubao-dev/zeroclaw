@@ -233,7 +233,10 @@ pub(crate) fn scrub_credentials(input: &str) -> String {
                 .unwrap_or("");
 
             // Preserve first 4 chars for context, then redact
-            let prefix = if val.len() > 4 { &val[..4] } else { "" };
+            let prefix = match val.char_indices().nth(4) {
+                Some((idx, _)) => &val[..idx],
+                None => val,
+            };
 
             if full_match.contains(':') {
                 if full_match.contains('"') {
@@ -3652,6 +3655,14 @@ mod tests {
         let scrubbed = scrub_credentials(input);
         assert!(scrubbed.contains("\"api_key\": \"sk-1*[REDACTED]\""));
         assert!(scrubbed.contains("public"));
+    }
+
+    #[test]
+    fn test_scrub_credentials_multibyte() {
+        // Test with Chinese characters (each is 3 bytes)
+        let input = r#"{"token": "提取的token123456"}"#;
+        let scrubbed = scrub_credentials(input);
+        assert!(scrubbed.contains("\"token\": \"提取的to*[REDACTED]\""));
     }
 
     #[test]
