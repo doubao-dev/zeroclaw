@@ -1,4 +1,5 @@
 use crate::approval::{ApprovalManager, ApprovalRequest, ApprovalResponse};
+use crate::channels::split_internal_progress_delta;
 use crate::config::schema::{CostEnforcementMode, ModelPricing};
 use crate::config::{Config, ProgressMode};
 use crate::cost::{BudgetCheck, CostTracker, UsagePeriod};
@@ -410,6 +411,15 @@ fn should_emit_verbose_progress(mode: ProgressMode) -> bool {
 
 fn should_emit_tool_progress(mode: ProgressMode) -> bool {
     mode != ProgressMode::Off
+}
+
+fn local_visible_progress_delta(delta: &str) -> Option<&str> {
+    if let Some(block) = delta.strip_prefix(DRAFT_PROGRESS_BLOCK_SENTINEL) {
+        Some(block)
+    } else {
+        let (is_progress, content) = split_internal_progress_delta(delta);
+        is_progress.then_some(content)
+    }
 }
 
 fn estimate_prompt_tokens(
@@ -3069,6 +3079,16 @@ pub async fn run(
             ChatMessage::user(&enriched),
         ];
 
+        let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(100);
+        let delta_handle = tokio::spawn(async move {
+            while let Some(delta) = delta_rx.recv().await {
+                if let Some(content) = local_visible_progress_delta(&delta) {
+                    print!("{content}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+        });
+
         let ld_cfg = LoopDetectionConfig {
             no_progress_threshold: config.agent.loop_detection_no_progress_threshold,
             ping_pong_cycles: config.agent.loop_detection_ping_pong_cycles,
@@ -3092,23 +3112,26 @@ pub async fn run(
                         hb_cfg,
                         LOOP_DETECTION_CONFIG.scope(
                             ld_cfg,
-                            run_tool_call_loop(
-                                provider.as_ref(),
-                                &mut history,
-                                &tools_registry,
-                                observer.as_ref(),
-                                provider_name,
-                                &model_name,
-                                temperature,
-                                false,
-                                approval_manager.as_ref(),
-                                channel_name,
-                                &config.multimodal,
-                                config.agent.max_tool_iterations,
-                                None,
-                                None,
-                                effective_hooks,
-                                &[],
+                            TOOL_LOOP_PROGRESS_MODE.scope(
+                                ProgressMode::Verbose,
+                                run_tool_call_loop(
+                                    provider.as_ref(),
+                                    &mut history,
+                                    &tools_registry,
+                                    observer.as_ref(),
+                                    provider_name,
+                                    &model_name,
+                                    temperature,
+                                    false,
+                                    approval_manager.as_ref(),
+                                    channel_name,
+                                    &config.multimodal,
+                                    config.agent.max_tool_iterations,
+                                    None,
+                                    Some(delta_tx),
+                                    effective_hooks,
+                                    &[],
+                                ),
                             ),
                         ),
                     ),
@@ -3116,6 +3139,7 @@ pub async fn run(
             ),
         )
         .await?;
+        delta_handle.abort();
         final_output = response.clone();
         if config.memory.auto_save && response.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS {
             let assistant_key = autosave_memory_key("assistant_resp");
@@ -3273,6 +3297,15 @@ pub async fn run(
             } else {
                 None
             };
+            let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(100);
+            let delta_handle = tokio::spawn(async move {
+                while let Some(delta) = delta_rx.recv().await {
+                    if let Some(content) = local_visible_progress_delta(&delta) {
+                        print!("{content}");
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+            });
             let response = match scope_cost_enforcement_context(
                 cost_enforcement_context.clone(),
                 scope_deferred_action_policy(
@@ -3283,23 +3316,26 @@ pub async fn run(
                             hb_cfg,
                             LOOP_DETECTION_CONFIG.scope(
                                 ld_cfg,
-                                run_tool_call_loop(
-                                    provider.as_ref(),
-                                    &mut history,
-                                    &tools_registry,
-                                    observer.as_ref(),
-                                    provider_name,
-                                    &model_name,
-                                    temperature,
-                                    false,
-                                    approval_manager.as_ref(),
-                                    channel_name,
-                                    &config.multimodal,
-                                    config.agent.max_tool_iterations,
-                                    None,
-                                    None,
-                                    effective_hooks,
-                                    &[],
+                                TOOL_LOOP_PROGRESS_MODE.scope(
+                                    ProgressMode::Verbose,
+                                    run_tool_call_loop(
+                                        provider.as_ref(),
+                                        &mut history,
+                                        &tools_registry,
+                                        observer.as_ref(),
+                                        provider_name,
+                                        &model_name,
+                                        temperature,
+                                        false,
+                                        approval_manager.as_ref(),
+                                        channel_name,
+                                        &config.multimodal,
+                                        config.agent.max_tool_iterations,
+                                        None,
+                                        Some(delta_tx),
+                                        effective_hooks,
+                                        &[],
+                                    ),
                                 ),
                             ),
                         ),
@@ -3310,6 +3346,7 @@ pub async fn run(
             {
                 Ok(resp) => resp,
                 Err(e) => {
+                    delta_handle.abort();
                     if is_tool_iteration_limit_error(&e) {
                         let pause_notice = format!(
                             "⚠️ Reached tool-iteration limit ({}). Context and progress are preserved. \
@@ -3333,6 +3370,7 @@ pub async fn run(
                     continue;
                 }
             };
+            delta_handle.abort();
             final_output = response.clone();
             if config.memory.auto_save && response.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS {
                 let assistant_key = autosave_memory_key("assistant_resp");
@@ -7362,6 +7400,17 @@ Let me check the result."#;
         assert!(should_emit_tool_progress(ProgressMode::Verbose));
         assert!(should_emit_tool_progress(ProgressMode::Compact));
         assert!(!should_emit_tool_progress(ProgressMode::Off));
+    }
+
+    #[test]
+    fn local_visible_progress_delta_supports_line_and_block_progress() {
+        let line = format!("{DRAFT_PROGRESS_SENTINEL}🤔 Thinking...\n");
+        assert_eq!(local_visible_progress_delta(&line), Some("🤔 Thinking...\n"));
+
+        let block = format!("{DRAFT_PROGRESS_BLOCK_SENTINEL}⏳ shell: ls -la\n");
+        assert_eq!(local_visible_progress_delta(&block), Some("⏳ shell: ls -la\n"));
+
+        assert_eq!(local_visible_progress_delta("final answer"), None);
     }
 
     #[test]
