@@ -722,7 +722,7 @@ fn should_expose_internal_tool_details(user_message: &str) -> bool {
     mentions_internal_details_cjk && CJK_VERBS.iter().any(|verb| trimmed.contains(verb))
 }
 
-fn split_internal_progress_delta(delta: &str) -> (bool, &str) {
+pub(crate) fn split_internal_progress_delta(delta: &str) -> (bool, &str) {
     if let Some(rest) = delta.strip_prefix(crate::agent::loop_::DRAFT_PROGRESS_SENTINEL) {
         (true, rest)
     } else {
@@ -734,7 +734,7 @@ fn effective_progress_mode_for_message(
     channel_name: &str,
     expose_internal_tool_details: bool,
 ) -> ProgressMode {
-    if channel_name.eq_ignore_ascii_case("cli") || expose_internal_tool_details {
+    if channel_name.eq_ignore_ascii_case("cli") || channel_name.eq_ignore_ascii_case("daemon") || expose_internal_tool_details {
         ProgressMode::Verbose
     } else if channel_name.eq_ignore_ascii_case("telegram") {
         runtime_telegram_progress_mode()
