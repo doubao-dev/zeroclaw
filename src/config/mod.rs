@@ -25,8 +25,8 @@ pub use schema::{
     SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig,
     SecurityRoleConfig, SkillsConfig, SkillsPromptInjectionMode, SlackConfig, StorageConfig,
     StorageProviderConfig, StorageProviderSection, StreamMode, SubAgentsConfig,
-    DeferredActionPolicy, SyscallAnomalyConfig, TelegramConfig, TranscriptionConfig, TunnelConfig,
-    UrlAccessConfig,
+    DeferredActionPolicy, EmptyResponsePolicy, SyscallAnomalyConfig, TelegramConfig,
+    TranscriptionConfig, TunnelConfig, UrlAccessConfig,
     WasmCapabilityEscalationMode, WasmConfig, WasmModuleHashPolicy, WasmRuntimeConfig,
     WasmSecurityConfig, WebFetchConfig, WebSearchConfig, WebhookConfig, DEFAULT_MODEL_FALLBACK,
 };
