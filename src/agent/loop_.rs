@@ -3662,7 +3662,7 @@ mod tests {
         // Test with Chinese characters (each is 3 bytes)
         let input = r#"{"token": "提取的token123456"}"#;
         let scrubbed = scrub_credentials(input);
-        assert!(scrubbed.contains("\"token\": \"提取的to*[REDACTED]\""));
+        assert!(scrubbed.contains("\"token\": \"提取的t*[REDACTED]\""));
     }
 
     #[test]
