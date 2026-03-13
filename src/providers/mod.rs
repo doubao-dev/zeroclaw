@@ -742,6 +742,7 @@ pub struct ProviderRuntimeOptions {
     pub reasoning_enabled: Option<bool>,
     pub reasoning_level: Option<String>,
     pub custom_provider_api_mode: Option<CompatibleApiMode>,
+    pub disable_responses_fallback: bool,
     pub max_tokens_override: Option<u32>,
     pub model_support_vision: Option<bool>,
 }
@@ -757,6 +758,7 @@ impl Default for ProviderRuntimeOptions {
             reasoning_enabled: None,
             reasoning_level: None,
             custom_provider_api_mode: None,
+            disable_responses_fallback: false,
             max_tokens_override: None,
             model_support_vision: None,
         }
@@ -1488,15 +1490,18 @@ fn create_provider_with_url_and_options(
             let api_mode = options
                 .custom_provider_api_mode
                 .unwrap_or(CompatibleApiMode::OpenAiChatCompletions);
-            Ok(Box::new(OpenAiCompatibleProvider::new_custom_with_mode(
-                "Custom",
-                &base_url,
-                key,
-                AuthStyle::Bearer,
-                true,
-                api_mode,
-                options.max_tokens_override,
-            )))
+            Ok(Box::new(
+                OpenAiCompatibleProvider::new_custom_with_mode(
+                    "Custom",
+                    &base_url,
+                    key,
+                    AuthStyle::Bearer,
+                    true,
+                    api_mode,
+                    options.max_tokens_override,
+                )
+                .with_responses_fallback(!options.disable_responses_fallback),
+            ))
         }
 
         // ── Anthropic-compatible custom endpoints ───────────

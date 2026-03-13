@@ -438,6 +438,8 @@ pub struct ProviderConfig {
     /// Existing configs that omit `provider.transport` remain valid and fall back to defaults.
     #[serde(default)]
     pub transport: Option<String>,
+    #[serde(default)]
+    pub disable_responses_fallback: bool,
 }
 
 // ── Delegate Agents ──────────────────────────────────────────────
@@ -8530,6 +8532,14 @@ impl Config {
             );
         }
 
+        if self.provider.disable_responses_fallback
+            && matches!(self.provider_api, Some(ProviderApiMode::OpenAiResponses))
+        {
+            anyhow::bail!(
+                "provider.disable_responses_fallback=true is incompatible with provider_api=openai-responses"
+            );
+        }
+
         // Embedding routes
         for (i, route) in self.embedding_routes.iter().enumerate() {
             if route.hint.trim().is_empty() {
@@ -12251,6 +12261,21 @@ requires_openai_auth = true
             .expect_err("provider_api should be rejected for non-custom provider");
         assert!(err.to_string().contains(
             "provider_api is only valid when default_provider uses the custom:<url> format"
+        ));
+    }
+
+    #[test]
+    async fn disable_responses_fallback_rejects_responses_mode() {
+        let mut config = Config::default();
+        config.default_provider = Some("custom:https://example.com/v1".to_string());
+        config.provider_api = Some(ProviderApiMode::OpenAiResponses);
+        config.provider.disable_responses_fallback = true;
+
+        let err = config
+            .validate()
+            .expect_err("responses mode should be rejected when fallback is disabled");
+        assert!(err.to_string().contains(
+            "provider.disable_responses_fallback=true is incompatible with provider_api=openai-responses"
         ));
     }
 

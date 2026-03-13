@@ -232,6 +232,11 @@ impl OpenAiCompatibleProvider {
         )
     }
 
+    pub fn with_responses_fallback(mut self, enabled: bool) -> Self {
+        self.supports_responses_fallback = enabled;
+        self
+    }
+
     fn new_with_options(
         name: &str,
         base_url: &str,
@@ -2740,6 +2745,22 @@ mod tests {
 
         assert!(provider.should_use_responses_mode());
         assert_eq!(provider.effective_max_tokens(), Some(2048));
+    }
+
+    #[test]
+    fn with_responses_fallback_disables_fallback() {
+        let provider = OpenAiCompatibleProvider::new_custom_with_mode(
+            "custom",
+            "https://api.example.com",
+            Some("key"),
+            AuthStyle::Bearer,
+            true,
+            CompatibleApiMode::OpenAiChatCompletions,
+            None,
+        )
+        .with_responses_fallback(false);
+
+        assert!(!provider.supports_responses_fallback);
     }
 
     #[tokio::test]

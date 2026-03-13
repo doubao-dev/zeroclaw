@@ -560,6 +560,7 @@ pub fn all_tools_with_runtime(
             custom_provider_api_mode: root_config
                 .provider_api
                 .map(|mode| mode.as_compatible_mode()),
+            disable_responses_fallback: root_config.provider.disable_responses_fallback,
             max_tokens_override: None,
             model_support_vision: root_config.model_support_vision,
         };

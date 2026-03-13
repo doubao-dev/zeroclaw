@@ -1601,6 +1601,7 @@ data: [DONE]
             reasoning_enabled: None,
             reasoning_level: None,
             custom_provider_api_mode: None,
+            disable_responses_fallback: false,
             max_tokens_override: None,
             model_support_vision: None,
         };
