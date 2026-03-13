@@ -680,8 +680,8 @@ pub fn all_tools_with_runtime(
                 );
             } else {
                 tool_arcs.push(Arc::new(FeishuDocTool::new(
-                    app_id,
-                    app_secret,
+                    app_id.clone(),
+                    app_secret.clone(),
                     use_feishu,
                     security.clone(),
                 )));

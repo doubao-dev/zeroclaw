@@ -118,12 +118,12 @@ impl FeishuTenantClient {
         let token = self.get_tenant_access_token().await?;
         let mut builder = self
             .client
-            .request(method, url)
+            .request(method.clone(), url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json; charset=utf-8");
 
-        if let Some(b) = body {
-            builder = builder.json(&b);
+        if let Some(ref b) = body {
+            builder = builder.json(b);
         }
 
         let resp = builder.send().await?;
@@ -142,8 +142,8 @@ impl FeishuTenantClient {
                     .request(method, url)
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Content-Type", "application/json; charset=utf-8");
-                if let Some(b) = body {
-                    builder = builder.json(&b);
+                if let Some(ref b) = body {
+                    builder = builder.json(b);
                 }
                 let resp = builder.send().await?;
                 let status = resp.status();
