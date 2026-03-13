@@ -7,6 +7,7 @@
 //! Contributed from RustyClaw (MIT licensed).
 
 use regex::Regex;
+use reqwest::Url;
 use std::sync::OnceLock;
 
 /// Minimum sensitivity required to activate heuristic (generic) secret rules.
@@ -18,6 +19,13 @@ use std::sync::OnceLock;
 const GENERIC_SECRET_SENSITIVITY_THRESHOLD: f64 = 0.5;
 const ENTROPY_TOKEN_MIN_LEN: usize = 24;
 const HIGH_ENTROPY_BASELINE: f64 = 4.2;
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateToken<'a> {
+    value: &'a str,
+    start: usize,
+    end: usize,
+}
 
 /// Result of leak detection.
 #[derive(Debug, Clone)]
@@ -317,21 +325,25 @@ impl LeakDetector {
         let mut flagged = false;
 
         for token in extract_candidate_tokens(content) {
-            if token.len() < ENTROPY_TOKEN_MIN_LEN {
+            if token.value.len() < ENTROPY_TOKEN_MIN_LEN {
                 continue;
             }
 
             // Lower false positives by requiring mixed alphanumerics.
-            let has_alpha = token.chars().any(|c| c.is_ascii_alphabetic());
-            let has_digit = token.chars().any(|c| c.is_ascii_digit());
+            let has_alpha = token.value.chars().any(|c| c.is_ascii_alphabetic());
+            let has_digit = token.value.chars().any(|c| c.is_ascii_digit());
             if !(has_alpha && has_digit) {
                 continue;
             }
 
-            let entropy = shannon_entropy(token.as_bytes());
+            if token_is_safe_url_component(content, token) {
+                continue;
+            }
+
+            let entropy = shannon_entropy(token.value.as_bytes());
             if entropy >= threshold {
                 flagged = true;
-                let replaced = redacted.replace(token, "[REDACTED_HIGH_ENTROPY_TOKEN]");
+                let replaced = redacted.replace(token.value, "[REDACTED_HIGH_ENTROPY_TOKEN]");
                 if replaced != *redacted {
                     *redacted = replaced;
                 } else if redacted.contains("[REDACTED_SECRET]") {
@@ -347,13 +359,94 @@ impl LeakDetector {
     }
 }
 
-fn extract_candidate_tokens(content: &str) -> Vec<&str> {
-    content
-        .split(|c: char| {
-            !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+' || c == '/' || c == '=')
-        })
-        .filter(|token| !token.is_empty())
-        .collect()
+fn extract_candidate_tokens(content: &str) -> Vec<CandidateToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut current_start = None;
+
+    for (idx, ch) in content.char_indices() {
+        if is_candidate_token_char(ch) {
+            if current_start.is_none() {
+                current_start = Some(idx);
+            }
+            continue;
+        }
+
+        if let Some(start) = current_start.take() {
+            tokens.push(CandidateToken {
+                value: &content[start..idx],
+                start,
+                end: idx,
+            });
+        }
+    }
+
+    if let Some(start) = current_start {
+        tokens.push(CandidateToken {
+            value: &content[start..],
+            start,
+            end: content.len(),
+        });
+    }
+
+    tokens
+}
+
+fn is_candidate_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+' | '/' | '=')
+}
+
+fn token_is_safe_url_component(content: &str, token: CandidateToken<'_>) -> bool {
+    static URL_PATTERN: OnceLock<Regex> = OnceLock::new();
+    let regex =
+        URL_PATTERN.get_or_init(|| Regex::new(r"https?://[^\s<>()]+").expect("valid url regex"));
+
+    regex.find_iter(content).any(|m| {
+        if token.start < m.start() || token.end > m.end() {
+            return false;
+        }
+
+        let url_text = m.as_str();
+        if Url::parse(url_text).is_err() {
+            return false;
+        }
+
+        url_safe_component_contains(url_text, token.start - m.start(), token.end - m.start())
+    })
+}
+
+fn url_safe_component_contains(url_text: &str, start: usize, end: usize) -> bool {
+    let scheme_end = url_text.find("://").map(|idx| idx + 3).unwrap_or(0);
+    let authority_tail = url_text[scheme_end..]
+        .find(['/', '?', '#'])
+        .map(|idx| scheme_end + idx)
+        .unwrap_or(url_text.len());
+
+    let host_start = authority_start_after_userinfo(url_text, scheme_end, authority_tail);
+    let query_start = url_text.find('?');
+    let fragment_start = url_text.find('#');
+    let path_start = url_text[scheme_end..].find('/').map(|idx| scheme_end + idx);
+    let path_end = query_start.or(fragment_start).unwrap_or(url_text.len());
+    let host_and_path_end = path_start.map(|_| path_end).unwrap_or(authority_tail);
+
+    range_contains(host_start, host_and_path_end, start, end)
+        || fragment_start
+            .map(|fragment_start| range_contains(fragment_start + 1, url_text.len(), start, end))
+            .unwrap_or(false)
+}
+
+fn authority_start_after_userinfo(
+    url_text: &str,
+    scheme_end: usize,
+    authority_end: usize,
+) -> usize {
+    url_text[scheme_end..authority_end]
+        .rfind('@')
+        .map(|idx| scheme_end + idx + 1)
+        .unwrap_or(scheme_end)
+}
+
+fn range_contains(range_start: usize, range_end: usize, start: usize, end: usize) -> bool {
+    start >= range_start && end <= range_end && start < end
 }
 
 fn shannon_entropy(bytes: &[u8]) -> f64 {
@@ -524,6 +617,38 @@ MIIEowIBAAKCAQEA0ZPr5JeyVDonXsKhfq...
         let content = "the quick brown fox jumps over the lazy dog";
         let result = detector.scan(content);
         assert!(matches!(result, LeakResult::Clean));
+    }
+
+    #[test]
+    fn high_entropy_token_in_url_path_is_not_redacted() {
+        let detector = LeakDetector::with_sensitivity(0.9);
+        let content =
+            "Document URL: https://feishu.cn/docx/A9sD2kL0zQ1xW8vN3mR7tY6uI4oP2qS9dF1gH5jK";
+        let result = detector.scan(content);
+        assert!(matches!(result, LeakResult::Clean));
+    }
+
+    #[test]
+    fn high_entropy_token_in_url_host_is_not_redacted() {
+        let detector = LeakDetector::with_sensitivity(0.9);
+        let content = "Follow this link: https://foo.bar.A9sD2kL0zQ1xW8vN3mR7tY6uI4oP2qS9dF1gH5jK";
+        let result = detector.scan(content);
+        assert!(matches!(result, LeakResult::Clean));
+    }
+
+    #[test]
+    fn high_entropy_token_in_url_query_is_still_redacted() {
+        let detector = LeakDetector::with_sensitivity(0.9);
+        let content =
+            "Signed URL: https://example.com/download?token=A9sD2kL0zQ1xW8vN3mR7tY6uI4oP2qS9dF1gH5jK";
+        let result = detector.scan(content);
+        match result {
+            LeakResult::Detected { patterns, redacted } => {
+                assert!(patterns.iter().any(|p| p.contains("High-entropy token")));
+                assert!(redacted.contains("[REDACTED_HIGH_ENTROPY_TOKEN]"));
+            }
+            LeakResult::Clean => panic!("expected high-entropy query detection"),
+        }
     }
 
     #[test]
