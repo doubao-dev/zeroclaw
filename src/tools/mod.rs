@@ -110,7 +110,10 @@ pub use delegate::DelegateTool;
 pub use delegate_coordination_status::DelegateCoordinationStatusTool;
 pub use docx_read::DocxReadTool;
 #[cfg(feature = "channel-lark")]
-pub use feishu_bitable::{FeishuBitableAppTableRecordTool, FeishuBitableAppTableTool, FeishuBitableAppTool};
+pub use feishu_bitable::{
+    FeishuBitableAppTableFieldTool, FeishuBitableAppTableRecordTool, FeishuBitableAppTableTool,
+    FeishuBitableAppTableViewTool, FeishuBitableAppTool,
+};
 #[cfg(feature = "channel-lark")]
 pub use feishu_doc::FeishuDocTool;
 pub use file_edit::FileEditTool;
@@ -692,6 +695,18 @@ pub fn all_tools_with_runtime(
                     security.clone(),
                 )));
                 tool_arcs.push(Arc::new(FeishuBitableAppTableTool::new(
+                    app_id.clone(),
+                    app_secret.clone(),
+                    use_feishu,
+                    security.clone(),
+                )));
+                tool_arcs.push(Arc::new(FeishuBitableAppTableFieldTool::new(
+                    app_id.clone(),
+                    app_secret.clone(),
+                    use_feishu,
+                    security.clone(),
+                )));
+                tool_arcs.push(Arc::new(FeishuBitableAppTableViewTool::new(
                     app_id.clone(),
                     app_secret.clone(),
                     use_feishu,
