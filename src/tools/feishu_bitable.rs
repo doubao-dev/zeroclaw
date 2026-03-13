@@ -3,6 +3,7 @@ use crate::tools::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use reqwest::Method;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -382,10 +383,50 @@ impl FeishuBitableAppTableTool {
 
         match action {
             "create" => {
-                let table = args
+                let table_value = args
                     .get("table")
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'table' parameter"))?
-                    .clone();
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'table' parameter"))?;
+                let table_obj = table_value
+                    .as_object()
+                    .ok_or_else(|| anyhow::anyhow!("'table' must be an object"))?;
+
+                let mut table_obj = table_obj.clone();
+                if table_obj
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|s| !s.trim().is_empty())
+                    != Some(true)
+                {
+                    let fallback_name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("Missing table name; provide 'table.name' or top-level 'name'"))?;
+                    table_obj.insert("name".to_string(), Value::String(fallback_name.to_string()));
+                }
+
+                if let Some(fields_val) = table_obj.get("fields").cloned() {
+                    if let Some(fields) = fields_val.as_array() {
+                        let mut out = Vec::with_capacity(fields.len());
+                        for field in fields {
+                            let Some(field_obj) = field.as_object() else {
+                                anyhow::bail!("table.fields entries must be objects");
+                            };
+                            let mut field_obj = field_obj.clone();
+                            let ty = field_obj.get("type").and_then(Value::as_i64);
+                            if matches!(ty, Some(7) | Some(15)) {
+                                field_obj.remove("property");
+                            }
+                            out.push(Value::Object(field_obj));
+                        }
+                        table_obj.insert("fields".to_string(), Value::Array(out));
+                    } else {
+                        anyhow::bail!("'table.fields' must be an array");
+                    }
+                }
+
+                let table = Value::Object(table_obj);
                 let url = format!("{}/bitable/v1/apps/{}/tables", self.client.api_base(), app_token);
                 let payload = self
                     .client
@@ -578,6 +619,97 @@ impl FeishuBitableAppTableRecordTool {
         }
     }
 
+    async fn field_name_to_id_map(
+        &self,
+        app_token: &str,
+        table_id: &str,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        let mut page_token: Option<String> = None;
+        let mut map: HashMap<String, String> = HashMap::new();
+        loop {
+            let mut url = format!(
+                "{}/bitable/v1/apps/{}/tables/{}/fields?page_size=100",
+                self.client.api_base(),
+                app_token,
+                table_id
+            );
+            if let Some(token) = page_token.as_deref() {
+                url.push_str(&format!("&page_token={}", urlencoding::encode(token)));
+            }
+
+            let payload = self.client.authed_request(Method::GET, &url, None).await?;
+            let data = payload
+                .get("data")
+                .ok_or_else(|| anyhow::anyhow!("fields list response missing 'data'"))?;
+            let items = data
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("fields list response missing 'data.items'"))?;
+
+            for item in items {
+                let field_id = item.get("field_id").and_then(Value::as_str);
+                let field_name = item.get("field_name").and_then(Value::as_str);
+                if let (Some(id), Some(name)) = (field_id, field_name) {
+                    map.entry(name.to_string()).or_insert_with(|| id.to_string());
+                }
+            }
+
+            let has_more = data.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+            if !has_more {
+                break;
+            }
+            page_token = data
+                .get("page_token")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            if page_token.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+                break;
+            }
+        }
+        Ok(map)
+    }
+
+    fn should_translate_field_keys(fields: &serde_json::Map<String, Value>) -> bool {
+        fields.keys().any(|k| !k.starts_with("fld"))
+    }
+
+    fn translate_fields(
+        fields: &serde_json::Map<String, Value>,
+        map: &HashMap<String, String>,
+    ) -> Value {
+        let mut out = serde_json::Map::with_capacity(fields.len());
+        for (k, v) in fields {
+            if let Some(field_id) = map.get(k) {
+                out.insert(field_id.clone(), v.clone());
+            } else {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        Value::Object(out)
+    }
+
+    fn translate_records(
+        records: &[Value],
+        map: &HashMap<String, String>,
+    ) -> anyhow::Result<Value> {
+        let mut out: Vec<Value> = Vec::with_capacity(records.len());
+        for record in records {
+            let obj = record
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("each item in 'records' must be an object"))?;
+            let mut cloned = obj.clone();
+            if let Some(fields_val) = obj.get("fields") {
+                let fields_obj = fields_val
+                    .as_object()
+                    .ok_or_else(|| anyhow::anyhow!("record.fields must be an object"))?;
+                let translated = Self::translate_fields(fields_obj, map);
+                cloned.insert("fields".to_string(), translated);
+            }
+            out.push(Value::Object(cloned));
+        }
+        Ok(Value::Array(out))
+    }
+
     async fn execute_action(&self, action: &str, args: &Value) -> anyhow::Result<Value> {
         let app_token = args
             .get("app_token")
@@ -597,6 +729,12 @@ impl FeishuBitableAppTableRecordTool {
                 if fields.is_empty() {
                     anyhow::bail!("'fields' cannot be empty");
                 }
+                let fields = if Self::should_translate_field_keys(fields) {
+                    let map = self.field_name_to_id_map(app_token, table_id).await?;
+                    Self::translate_fields(fields, &map)
+                } else {
+                    Value::Object(fields.clone())
+                };
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/records?user_id_type=open_id",
                     self.client.api_base(),
@@ -621,6 +759,12 @@ impl FeishuBitableAppTableRecordTool {
                 if fields.is_empty() {
                     anyhow::bail!("'fields' cannot be empty");
                 }
+                let fields = if Self::should_translate_field_keys(fields) {
+                    let map = self.field_name_to_id_map(app_token, table_id).await?;
+                    Self::translate_fields(fields, &map)
+                } else {
+                    Value::Object(fields.clone())
+                };
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/records/{}?user_id_type=open_id",
                     self.client.api_base(),
@@ -660,6 +804,20 @@ impl FeishuBitableAppTableRecordTool {
                 if records.is_empty() {
                     anyhow::bail!("'records' cannot be empty");
                 }
+                let records = {
+                    let needs_translate = records.iter().any(|r| {
+                        r.get("fields")
+                            .and_then(Value::as_object)
+                            .map(Self::should_translate_field_keys)
+                            .unwrap_or(false)
+                    });
+                    if needs_translate {
+                        let map = self.field_name_to_id_map(app_token, table_id).await?;
+                        Self::translate_records(records, &map)?
+                    } else {
+                        Value::Array(records.clone())
+                    }
+                };
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/records/batch_create?user_id_type=open_id",
                     self.client.api_base(),
@@ -680,6 +838,20 @@ impl FeishuBitableAppTableRecordTool {
                 if records.is_empty() {
                     anyhow::bail!("'records' cannot be empty");
                 }
+                let records = {
+                    let needs_translate = records.iter().any(|r| {
+                        r.get("fields")
+                            .and_then(Value::as_object)
+                            .map(Self::should_translate_field_keys)
+                            .unwrap_or(false)
+                    });
+                    if needs_translate {
+                        let map = self.field_name_to_id_map(app_token, table_id).await?;
+                        Self::translate_records(records, &map)?
+                    } else {
+                        Value::Array(records.clone())
+                    }
+                };
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/records/batch_update?user_id_type=open_id",
                     self.client.api_base(),
