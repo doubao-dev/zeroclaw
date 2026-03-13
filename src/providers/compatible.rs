@@ -2296,13 +2296,20 @@ impl Provider for OpenAiCompatibleProvider {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|tc| {
-                let function = tc.function?;
-                let name = function.name?;
-                let arguments = function.arguments.unwrap_or_else(|| "{}".to_string());
+                let name = tc.function_name()?;
+                let arguments = tc.function_arguments().unwrap_or_else(|| "{}".to_string());
+                let normalized_arguments = Self::normalize_tool_arguments(arguments.clone());
+                if normalized_arguments == "{}" && arguments != "{}" {
+                    tracing::warn!(
+                        function = %name,
+                        arguments = %arguments,
+                        "Invalid JSON in native tool-call arguments, using empty object"
+                    );
+                }
                 Some(ProviderToolCall {
                     id: uuid::Uuid::new_v4().to_string(),
                     name,
-                    arguments,
+                    arguments: normalized_arguments,
                 })
             })
             .collect::<Vec<_>>();
@@ -3484,6 +3491,34 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].name, "shell");
         assert_eq!(parsed.stop_reason, Some(NormalizedStopReason::ToolCall));
         assert_eq!(parsed.raw_stop_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn parse_chat_response_accepts_top_level_tool_call_fields() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "name": "memory_recall",
+                        "arguments": "{\"query\":\"latest roadmap\"}"
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+
+        let parsed = parse_chat_response_body("test-compatible", &body).unwrap();
+        let choice = parsed.choices.into_iter().next().unwrap();
+        let provider_response = OpenAiCompatibleProvider::parse_native_response(choice);
+
+        assert_eq!(provider_response.tool_calls.len(), 1);
+        assert_eq!(provider_response.tool_calls[0].name, "memory_recall");
+        assert_eq!(
+            provider_response.tool_calls[0].arguments,
+            "{\"query\":\"latest roadmap\"}"
+        );
     }
 
     #[test]
