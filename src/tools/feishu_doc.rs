@@ -409,6 +409,9 @@ impl FeishuDocTool {
                         "document_id": doc_id,
                         "title": title,
                         "url": document_url,
+                        "verified_via_api": true,
+                        "verification_method": "docx raw_content",
+                        "verification_note": "Do not use curl/http_request/web_fetch/browser tools on the returned Feishu URL to verify creation. This document was already verified through the Feishu API.",
                     });
                     if !warnings.is_empty() {
                         result["warning"] = Value::String(warnings.join("; "));
@@ -1296,7 +1299,7 @@ impl Tool for FeishuDocTool {
     }
 
     fn description(&self) -> &str {
-        "Feishu document operations. Actions: read, write, append, create, set_permission, list_blocks, get_block, update_block, delete_block, create_table, write_table_cells, create_table_with_values, upload_image, upload_file.\n\nIMPORTANT RULES:\n1. After any create, write, append, or update_block action, ALWAYS share the document URL with the user IN THE SAME REPLY. Format: https://feishu.cn/docx/{doc_token} — Do not say 'I will send it later', do not wait for the user to ask.\n2. When outputting Feishu document URLs, use PLAIN TEXT only. Do NOT wrap URLs in Markdown formatting such as **url**, [text](url), or `url`. Feishu messages are plain text and Markdown symbols like ** will be included in the parsed URL, breaking the link.\n3. NEVER fabricate or guess a doc_token from memory. If you do not have the token from the current conversation or from memory_store, tell the user: 'The token has been lost, the document needs to be recreated.' A wrong token causes 404 errors, which is worse than admitting you don't know.\n4. Rule 3 applies to ALL tool calls that return one-time identifiers, not just feishu_doc."
+        "Feishu document operations. Actions: read, write, append, create, set_permission, list_blocks, get_block, update_block, delete_block, create_table, write_table_cells, create_table_with_values, upload_image, upload_file.\n\nIMPORTANT RULES:\n1. After any create, write, append, or update_block action, ALWAYS share the document URL with the user IN THE SAME REPLY. Format: https://feishu.cn/docx/{doc_token} — Do not say 'I will send it later', do not wait for the user to ask.\n2. When outputting Feishu document URLs, use PLAIN TEXT only. Do NOT wrap URLs in Markdown formatting such as **url**, [text](url), or `url`. Feishu messages are plain text and Markdown symbols like ** will be included in the parsed URL, breaking the link.\n3. NEVER fabricate or guess a doc_token from memory. If you do not have the token from the current conversation or from memory_store, tell the user: 'The token has been lost, the document needs to be recreated.' A wrong token causes 404 errors, which is worse than admitting you don't know.\n4. Rule 3 applies to ALL tool calls that return one-time identifiers, not just feishu_doc.\n5. Do NOT use curl, shell, http_request, web_fetch, or browser tools on returned Feishu/Lark document URLs to verify creation. Those URLs may redirect or behave differently in headless environments. Creation is already verified by the Feishu API; if you need a follow-up check, use feishu_doc actions with the doc_token."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

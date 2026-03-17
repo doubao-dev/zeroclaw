@@ -258,7 +258,17 @@ impl FeishuBitableAppTool {
                     .client
                     .authed_request(Method::POST, &url, Some(body))
                     .await?;
-                Ok(json!({ "app": payload.get("data").and_then(|v| v.get("app")).cloned() }))
+                let app = payload.get("data").and_then(|v| v.get("app")).cloned();
+                let app_token = extract_app_token(&payload)
+                    .ok_or_else(|| anyhow::anyhow!("create response missing app_token"))?;
+                let verified_app = self.verify_app_exists(&app_token).await?;
+                Ok(json!({
+                    "app": app,
+                    "verified_via_api": true,
+                    "verification_method": "bitable get",
+                    "verification_note": "Do not use curl/http_request/web_fetch/browser tools on the returned Feishu URL to verify creation. This Bitable was already verified through the Feishu API.",
+                    "verified_app": verified_app,
+                }))
             }
             "get" => {
                 let app_token = args
@@ -318,7 +328,17 @@ impl FeishuBitableAppTool {
                     .client
                     .authed_request(Method::POST, &url, Some(body))
                     .await?;
-                Ok(json!({ "app": payload.get("data").and_then(|v| v.get("app")).cloned() }))
+                let app = payload.get("data").and_then(|v| v.get("app")).cloned();
+                let copied_app_token = extract_app_token(&payload)
+                    .ok_or_else(|| anyhow::anyhow!("copy response missing app_token"))?;
+                let verified_app = self.verify_app_exists(&copied_app_token).await?;
+                Ok(json!({
+                    "app": app,
+                    "verified_via_api": true,
+                    "verification_method": "bitable get",
+                    "verification_note": "Do not use curl/http_request/web_fetch/browser tools on the returned Feishu URL to verify creation. This Bitable was already verified through the Feishu API.",
+                    "verified_app": verified_app,
+                }))
             }
             "set_permission" => {
                 let app_token = args
@@ -485,6 +505,16 @@ impl FeishuBitableAppTool {
             .authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
             .await
     }
+
+    async fn verify_app_exists(&self, app_token: &str) -> anyhow::Result<Value> {
+        let url = format!("{}/bitable/v1/apps/{}", self.client.api_base(), app_token);
+        let payload = self.client.authed_request(Method::GET, &url, None).await?;
+        Ok(payload
+            .get("data")
+            .and_then(|v| v.get("app"))
+            .cloned()
+            .unwrap_or_else(|| json!({})))
+    }
 }
 
 #[async_trait]
@@ -494,7 +524,7 @@ impl Tool for FeishuBitableAppTool {
     }
 
     fn description(&self) -> &str {
-        "Feishu/Lark Bitable app management using tenant_access_token. Actions: create, get, list, patch, copy, set_permission."
+        "Feishu/Lark Bitable app management using tenant_access_token. Actions: create, get, list, patch, copy, set_permission.\n\nIMPORTANT RULES:\n1. Do NOT use curl, shell, http_request, web_fetch, or browser tools on returned Feishu/Lark bitable URLs to verify creation. Those URLs may redirect, require browser context, or return empty responses in headless environments.\n2. Create/copy results may already be verified through the Feishu API. If you need a follow-up check, use feishu_bitable_app get/list with the app_token instead of fetching the URL."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2030,6 +2060,20 @@ fn extract_permission_member(payload: &Value) -> Value {
         .and_then(|v| v.get("member"))
         .cloned()
         .unwrap_or_else(|| json!({}))
+}
+
+fn extract_app_token(payload: &Value) -> Option<String> {
+    let data = payload.get("data")?;
+    let app = data.get("app");
+    [
+        app.and_then(|v| v.get("app_token")),
+        app.and_then(|v| v.get("token")),
+        data.get("app_token"),
+        data.get("token"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|v| v.as_str().map(str::to_string))
 }
 
 fn ensure_api_success(payload: &Value, context: &str) -> anyhow::Result<()> {
