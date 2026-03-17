@@ -21,6 +21,7 @@ const ACTIONS: &[&str] = &[
     "write",
     "append",
     "create",
+    "set_permission",
     "list_blocks",
     "get_block",
     "update_block",
@@ -186,12 +187,60 @@ impl FeishuDocTool {
         }
     }
 
+    async fn authed_api_request_with_query(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<Value>,
+        query: Option<&[(&str, String)]>,
+    ) -> anyhow::Result<Value> {
+        let mut retried = false;
+
+        loop {
+            let token = self.get_tenant_access_token().await?;
+            let mut req = self
+                .http_client()
+                .request(method.clone(), url)
+                .bearer_auth(token);
+
+            if let Some(q) = query {
+                req = req.query(q);
+            }
+            if let Some(b) = body.clone() {
+                req = req.json(&b);
+            }
+
+            let resp = req.send().await?;
+            let status = resp.status();
+            let payload = parse_json_or_empty(resp).await?;
+
+            if should_refresh_token(status, &payload) && !retried {
+                retried = true;
+                self.invalidate_token().await;
+                continue;
+            }
+
+            if !status.is_success() {
+                anyhow::bail!(
+                    "request failed: method={} url={} status={} body={}",
+                    method,
+                    url,
+                    status,
+                    sanitize_api_json(&payload)
+                );
+            }
+
+            return Ok(payload);
+        }
+    }
+
     async fn execute_action(&self, action: &str, args: &Value) -> anyhow::Result<Value> {
         match action {
             "read" => self.action_read(args).await,
             "write" => self.action_write(args).await,
             "append" => self.action_append(args).await,
             "create" => self.action_create(args).await,
+            "set_permission" => self.action_set_permission(args).await,
             "list_blocks" => self.action_list_blocks(args).await,
             "get_block" => self.action_get_block(args).await,
             "update_block" => self.action_update_block(args).await,
@@ -385,6 +434,28 @@ impl FeishuDocTool {
             max_verify_attempts,
             last_err
         )
+    }
+
+    async fn action_set_permission(&self, args: &Value) -> anyhow::Result<Value> {
+        let doc_token = self.resolve_doc_token(args).await?;
+        let member_open_id = required_string(args, "member_open_id")?;
+        let perm = required_doc_permission(args, "perm")?;
+        let notify_lark = optional_bool(args, "notify_lark").unwrap_or(false);
+
+        let member = self
+            .upsert_member_permission(&doc_token, &member_open_id, perm, notify_lark)
+            .await?;
+
+        Ok(json!({
+            "success": true,
+            "document_id": doc_token,
+            "member_open_id": member_open_id,
+            "perm": member
+                .get("perm")
+                .cloned()
+                .unwrap_or_else(|| Value::String(perm.to_string())),
+            "member": member,
+        }))
     }
 
     async fn action_list_blocks(&self, args: &Value) -> anyhow::Result<Value> {
@@ -835,6 +906,43 @@ impl FeishuDocTool {
         document_id: &str,
         owner_open_id: &str,
     ) -> anyhow::Result<()> {
+        let _ = self
+            .upsert_member_permission(document_id, owner_open_id, "full_access", false)
+            .await?;
+        Ok(())
+    }
+
+    async fn upsert_member_permission(
+        &self,
+        document_id: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
+        let create_payload = self
+            .create_permission_member(document_id, member_open_id, perm, notify_lark)
+            .await?;
+        if has_api_success_code(&create_payload) {
+            return Ok(extract_permission_member(&create_payload));
+        }
+        if permission_member_already_exists(&create_payload) {
+            let update_payload = self
+                .update_permission_member(document_id, member_open_id, perm, notify_lark)
+                .await?;
+            ensure_api_success(&update_payload, "update permission member")?;
+            return Ok(extract_permission_member(&update_payload));
+        }
+        ensure_api_success(&create_payload, "create permission member")?;
+        Ok(extract_permission_member(&create_payload))
+    }
+
+    async fn create_permission_member(
+        &self,
+        document_id: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
         let url = format!(
             "{}/drive/v1/permissions/{}/members",
             self.api_base(),
@@ -842,16 +950,44 @@ impl FeishuDocTool {
         );
         let body = json!({
             "member_type": "openid",
-            "member_id": owner_open_id,
-            "perm": "full_access",
-            "perm_type": "container",
-            "type": "user"
+            "member_id": member_open_id,
+            "perm": perm
         });
-        let query = [("type", "docx".to_string())];
-        let _ = self
-            .authed_request_with_query(Method::POST, &url, Some(body), Some(&query))
-            .await?;
-        Ok(())
+        let query = [
+            ("type", "docx".to_string()),
+            ("need_notification", notify_lark.to_string()),
+        ];
+        self.authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
+            .await
+    }
+
+    async fn update_permission_member(
+        &self,
+        document_id: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
+        let url = format!(
+            "{}/drive/v1/permissions/{}/members/{}",
+            self.api_base(),
+            document_id,
+            member_open_id
+        );
+        let body = json!({
+            "token": document_id,
+            "type": "docx",
+            "member_type": "openid",
+            "member_id": member_open_id,
+            "perm": perm,
+            "notify_lark": notify_lark,
+        });
+        let query = [
+            ("type", "docx".to_string()),
+            ("need_notification", notify_lark.to_string()),
+        ];
+        self.authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
+            .await
     }
 
     async fn enable_link_share(&self, document_id: &str) -> anyhow::Result<()> {
@@ -1156,7 +1292,7 @@ impl Tool for FeishuDocTool {
     }
 
     fn description(&self) -> &str {
-        "Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block, create_table, write_table_cells, create_table_with_values, upload_image, upload_file.\n\nIMPORTANT RULES:\n1. After any create, write, append, or update_block action, ALWAYS share the document URL with the user IN THE SAME REPLY. Format: https://feishu.cn/docx/{doc_token} — Do not say 'I will send it later', do not wait for the user to ask.\n2. When outputting Feishu document URLs, use PLAIN TEXT only. Do NOT wrap URLs in Markdown formatting such as **url**, [text](url), or `url`. Feishu messages are plain text and Markdown symbols like ** will be included in the parsed URL, breaking the link.\n3. NEVER fabricate or guess a doc_token from memory. If you do not have the token from the current conversation or from memory_store, tell the user: 'The token has been lost, the document needs to be recreated.' A wrong token causes 404 errors, which is worse than admitting you don't know.\n4. Rule 3 applies to ALL tool calls that return one-time identifiers, not just feishu_doc."
+        "Feishu document operations. Actions: read, write, append, create, set_permission, list_blocks, get_block, update_block, delete_block, create_table, write_table_cells, create_table_with_values, upload_image, upload_file.\n\nIMPORTANT RULES:\n1. After any create, write, append, or update_block action, ALWAYS share the document URL with the user IN THE SAME REPLY. Format: https://feishu.cn/docx/{doc_token} — Do not say 'I will send it later', do not wait for the user to ask.\n2. When outputting Feishu document URLs, use PLAIN TEXT only. Do NOT wrap URLs in Markdown formatting such as **url**, [text](url), or `url`. Feishu messages are plain text and Markdown symbols like ** will be included in the parsed URL, breaking the link.\n3. NEVER fabricate or guess a doc_token from memory. If you do not have the token from the current conversation or from memory_store, tell the user: 'The token has been lost, the document needs to be recreated.' A wrong token causes 404 errors, which is worse than admitting you don't know.\n4. Rule 3 applies to ALL tool calls that return one-time identifiers, not just feishu_doc."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1191,6 +1327,19 @@ impl Tool for FeishuDocTool {
                 "owner_open_id": {
                     "type": "string",
                     "description": "Owner open_id to grant full_access after creation"
+                },
+                "member_open_id": {
+                    "type": "string",
+                    "description": "Collaborator open_id for set_permission"
+                },
+                "perm": {
+                    "type": "string",
+                    "enum": ["view", "edit", "full_access"],
+                    "description": "Permission level for set_permission"
+                },
+                "notify_lark": {
+                    "type": "boolean",
+                    "description": "Whether Feishu should notify the collaborator about the permission change (default: false)"
                 },
                 "link_share": {
                     "type": "boolean",
@@ -1445,6 +1594,28 @@ fn optional_string(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn optional_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(Value::as_bool)
+}
+
+fn required_doc_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
+    let value = args
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Missing '{}' parameter", key))?;
+
+    match value {
+        "view" | "edit" | "full_access" => Ok(value),
+        _ => anyhow::bail!(
+            "Invalid '{}' value '{}'. Supported values: view, edit, full_access",
+            key,
+            value
+        ),
+    }
+}
+
 fn required_usize(args: &Value, key: &str) -> anyhow::Result<usize> {
     let raw = args
         .get(key)
@@ -1482,6 +1653,31 @@ async fn parse_json_or_empty(resp: reqwest::Response) -> anyhow::Result<Value> {
 
 fn sanitize_api_json(body: &Value) -> String {
     crate::providers::sanitize_api_error(&body.to_string())
+}
+
+fn has_api_success_code(body: &Value) -> bool {
+    body.get("code").and_then(Value::as_i64) == Some(0)
+}
+
+fn permission_member_already_exists(body: &Value) -> bool {
+    let msg = body
+        .get("msg")
+        .or_else(|| body.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    msg.contains("already exists")
+        || msg.contains("already added")
+        || msg.contains("member exists")
+        || msg.contains("已存在")
+}
+
+fn extract_permission_member(body: &Value) -> Value {
+    body.get("data")
+        .and_then(|v| v.get("member"))
+        .cloned()
+        .unwrap_or_else(|| json!({}))
 }
 
 fn ensure_api_success(body: &Value, context: &str) -> anyhow::Result<()> {
