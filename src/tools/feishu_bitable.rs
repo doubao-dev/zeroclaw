@@ -157,6 +157,72 @@ impl FeishuTenantClient {
             sanitize_api_json(&payload)
         );
     }
+
+    async fn authed_api_request_with_query(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<Value>,
+        query: Option<&[(&str, String)]>,
+    ) -> anyhow::Result<Value> {
+        let token = self.get_tenant_access_token().await?;
+        let mut builder = self
+            .client
+            .request(method.clone(), url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json; charset=utf-8");
+
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        if let Some(ref b) = body {
+            builder = builder.json(b);
+        }
+
+        let resp = builder.send().await?;
+        let status = resp.status();
+        let payload = parse_json_or_empty(resp).await?;
+
+        if status.is_success() {
+            if api_error_code(&payload) == Some(INVALID_ACCESS_TOKEN_CODE) {
+                {
+                    let mut cached = self.tenant_token.write().await;
+                    *cached = None;
+                }
+                let token = self.get_tenant_access_token().await?;
+                let mut builder = self
+                    .client
+                    .request(method, url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json; charset=utf-8");
+                if let Some(q) = query {
+                    builder = builder.query(q);
+                }
+                if let Some(ref b) = body {
+                    builder = builder.json(b);
+                }
+                let resp = builder.send().await?;
+                let status = resp.status();
+                let payload = parse_json_or_empty(resp).await?;
+                if !status.is_success() {
+                    anyhow::bail!(
+                        "request failed: status={}, body={}",
+                        status,
+                        sanitize_api_json(&payload)
+                    );
+                }
+                return Ok(payload);
+            }
+
+            return Ok(payload);
+        }
+
+        anyhow::bail!(
+            "request failed: status={}, body={}",
+            status,
+            sanitize_api_json(&payload)
+        );
+    }
 }
 
 pub struct FeishuBitableAppTool {
@@ -254,6 +320,35 @@ impl FeishuBitableAppTool {
                     .await?;
                 Ok(json!({ "app": payload.get("data").and_then(|v| v.get("app")).cloned() }))
             }
+            "set_permission" => {
+                let app_token = args
+                    .get("app_token")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'app_token' parameter"))?;
+                let member_open_id = args
+                    .get("member_open_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'member_open_id' parameter"))?;
+                let perm = required_drive_permission(args, "perm")?;
+                let notify_lark = optional_bool(args, "notify_lark").unwrap_or(false);
+
+                let member = self
+                    .upsert_member_permission(app_token, member_open_id, perm, notify_lark)
+                    .await?;
+
+                Ok(json!({
+                    "success": true,
+                    "app_token": app_token,
+                    "member_open_id": member_open_id,
+                    "perm": member
+                        .get("perm")
+                        .cloned()
+                        .unwrap_or_else(|| Value::String(perm.to_string())),
+                    "member": member,
+                }))
+            }
             "list" => {
                 let folder_token = args.get("folder_token").and_then(Value::as_str);
                 let page_size = args.get("page_size").and_then(Value::as_u64);
@@ -305,6 +400,86 @@ impl FeishuBitableAppTool {
             _ => anyhow::bail!("Unsupported action: {}", action),
         }
     }
+
+    async fn upsert_member_permission(
+        &self,
+        app_token: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
+        let create_payload = self
+            .create_permission_member(app_token, member_open_id, perm, notify_lark)
+            .await?;
+        if has_api_success_code(&create_payload) {
+            return Ok(extract_permission_member(&create_payload));
+        }
+        if permission_member_already_exists(&create_payload) {
+            let update_payload = self
+                .update_permission_member(app_token, member_open_id, perm, notify_lark)
+                .await?;
+            ensure_api_success(&update_payload, "update permission member")?;
+            return Ok(extract_permission_member(&update_payload));
+        }
+        ensure_api_success(&create_payload, "create permission member")?;
+        Ok(extract_permission_member(&create_payload))
+    }
+
+    async fn create_permission_member(
+        &self,
+        app_token: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
+        let url = format!(
+            "{}/drive/v1/permissions/{}/members",
+            self.client.api_base(),
+            app_token
+        );
+        let body = json!({
+            "member_type": "openid",
+            "member_id": member_open_id,
+            "perm": perm
+        });
+        let query = [
+            ("type", "bitable".to_string()),
+            ("need_notification", notify_lark.to_string()),
+        ];
+        self.client
+            .authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
+            .await
+    }
+
+    async fn update_permission_member(
+        &self,
+        app_token: &str,
+        member_open_id: &str,
+        perm: &str,
+        notify_lark: bool,
+    ) -> anyhow::Result<Value> {
+        let url = format!(
+            "{}/drive/v1/permissions/{}/members/{}",
+            self.client.api_base(),
+            app_token,
+            member_open_id
+        );
+        let body = json!({
+            "token": app_token,
+            "type": "bitable",
+            "member_type": "openid",
+            "member_id": member_open_id,
+            "perm": perm,
+            "notify_lark": notify_lark,
+        });
+        let query = [
+            ("type", "bitable".to_string()),
+            ("need_notification", notify_lark.to_string()),
+        ];
+        self.client
+            .authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
+            .await
+    }
 }
 
 #[async_trait]
@@ -314,7 +489,7 @@ impl Tool for FeishuBitableAppTool {
     }
 
     fn description(&self) -> &str {
-        "Feishu/Lark Bitable app management using tenant_access_token. Actions: create, get, list, patch, copy."
+        "Feishu/Lark Bitable app management using tenant_access_token. Actions: create, get, list, patch, copy, set_permission."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -371,6 +546,25 @@ impl Tool for FeishuBitableAppTool {
                         "folder_token": { "type": "string", "description": "目标文件夹 token" }
                     },
                     "required": ["action", "app_token", "name"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": { "const": "set_permission" },
+                        "app_token": { "type": "string", "description": "多维表格 token" },
+                        "member_open_id": { "type": "string", "description": "协作者 open_id" },
+                        "perm": {
+                            "type": "string",
+                            "enum": ["view", "edit", "full_access"],
+                            "description": "权限级别"
+                        },
+                        "notify_lark": {
+                            "type": "boolean",
+                            "description": "是否通知协作者（默认 false）"
+                        }
+                    },
+                    "required": ["action", "app_token", "member_open_id", "perm"],
                     "additionalProperties": false
                 }
             ]
@@ -1726,8 +1920,56 @@ async fn parse_json_or_empty(resp: reqwest::Response) -> anyhow::Result<Value> {
     serde_json::from_slice(&bytes).or_else(|_| Ok(json!({ "raw": String::from_utf8_lossy(&bytes) })))
 }
 
+fn optional_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(Value::as_bool)
+}
+
+fn required_drive_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
+    let value = args
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Missing '{}' parameter", key))?;
+
+    match value {
+        "view" | "edit" | "full_access" => Ok(value),
+        _ => anyhow::bail!(
+            "Invalid '{}' value '{}'. Supported values: view, edit, full_access",
+            key,
+            value
+        ),
+    }
+}
+
 fn api_error_code(payload: &Value) -> Option<i64> {
     payload.get("code").and_then(Value::as_i64)
+}
+
+fn has_api_success_code(payload: &Value) -> bool {
+    api_error_code(payload) == Some(0)
+}
+
+fn permission_member_already_exists(payload: &Value) -> bool {
+    let msg = payload
+        .get("msg")
+        .or_else(|| payload.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    msg.contains("already exists")
+        || msg.contains("already added")
+        || msg.contains("member exists")
+        || msg.contains("已存在")
+}
+
+fn extract_permission_member(payload: &Value) -> Value {
+    payload
+        .get("data")
+        .and_then(|v| v.get("member"))
+        .cloned()
+        .unwrap_or_else(|| json!({}))
 }
 
 fn ensure_api_success(payload: &Value, context: &str) -> anyhow::Result<()> {
