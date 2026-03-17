@@ -438,18 +438,19 @@ impl FeishuDocTool {
 
     async fn action_set_permission(&self, args: &Value) -> anyhow::Result<Value> {
         let doc_token = self.resolve_doc_token(args).await?;
-        let member_open_id = required_string(args, "member_open_id")?;
+        let (member_type, member_id) = resolve_permission_member(args)?;
         let perm = required_doc_permission(args, "perm")?;
         let notify_lark = optional_bool(args, "notify_lark").unwrap_or(false);
 
         let member = self
-            .upsert_member_permission(&doc_token, &member_open_id, perm, notify_lark)
+            .upsert_member_permission(&doc_token, &member_type, &member_id, perm, notify_lark)
             .await?;
 
         Ok(json!({
             "success": true,
             "document_id": doc_token,
-            "member_open_id": member_open_id,
+            "member_type": member_type,
+            "member_id": member_id,
             "perm": member
                 .get("perm")
                 .cloned()
@@ -907,7 +908,7 @@ impl FeishuDocTool {
         owner_open_id: &str,
     ) -> anyhow::Result<()> {
         let _ = self
-            .upsert_member_permission(document_id, owner_open_id, "full_access", false)
+            .upsert_member_permission(document_id, "openid", owner_open_id, "full_access", false)
             .await?;
         Ok(())
     }
@@ -915,19 +916,20 @@ impl FeishuDocTool {
     async fn upsert_member_permission(
         &self,
         document_id: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
         let create_payload = self
-            .create_permission_member(document_id, member_open_id, perm, notify_lark)
+            .create_permission_member(document_id, member_type, member_id, perm, notify_lark)
             .await?;
         if has_api_success_code(&create_payload) {
             return Ok(extract_permission_member(&create_payload));
         }
         if permission_member_already_exists(&create_payload) {
             let update_payload = self
-                .update_permission_member(document_id, member_open_id, perm, notify_lark)
+                .update_permission_member(document_id, member_type, member_id, perm, notify_lark)
                 .await?;
             ensure_api_success(&update_payload, "update permission member")?;
             return Ok(extract_permission_member(&update_payload));
@@ -939,7 +941,8 @@ impl FeishuDocTool {
     async fn create_permission_member(
         &self,
         document_id: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
@@ -949,8 +952,8 @@ impl FeishuDocTool {
             document_id
         );
         let body = json!({
-            "member_type": "openid",
-            "member_id": member_open_id,
+            "member_type": member_type,
+            "member_id": member_id,
             "perm": perm
         });
         let query = [
@@ -964,7 +967,8 @@ impl FeishuDocTool {
     async fn update_permission_member(
         &self,
         document_id: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
@@ -972,13 +976,13 @@ impl FeishuDocTool {
             "{}/drive/v1/permissions/{}/members/{}",
             self.api_base(),
             document_id,
-            member_open_id
+            urlencoding::encode(member_id)
         );
         let body = json!({
             "token": document_id,
             "type": "docx",
-            "member_type": "openid",
-            "member_id": member_open_id,
+            "member_type": member_type,
+            "member_id": member_id,
             "perm": perm,
             "notify_lark": notify_lark,
         });
@@ -1330,7 +1334,20 @@ impl Tool for FeishuDocTool {
                 },
                 "member_open_id": {
                     "type": "string",
-                    "description": "Collaborator open_id for set_permission"
+                    "description": "Collaborator open_id for set_permission (legacy alias for member_id when member_type=openid)"
+                },
+                "member_email": {
+                    "type": "string",
+                    "description": "Collaborator email for set_permission (legacy alias for member_id when member_type=email)"
+                },
+                "member_id": {
+                    "type": "string",
+                    "description": "Collaborator identifier for set_permission"
+                },
+                "member_type": {
+                    "type": "string",
+                    "enum": ["openid", "email"],
+                    "description": "Identifier type for set_permission. Defaults from member_open_id/member_email, otherwise openid."
                 },
                 "perm": {
                     "type": "string",
@@ -1596,6 +1613,46 @@ fn optional_string(args: &Value, key: &str) -> Option<String> {
 
 fn optional_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
+}
+
+fn resolve_permission_member(args: &Value) -> anyhow::Result<(String, String)> {
+    let explicit_member_id = optional_string(args, "member_id");
+    let explicit_member_type = optional_string(args, "member_type");
+    let member_open_id = optional_string(args, "member_open_id");
+    let member_email = optional_string(args, "member_email");
+
+    if explicit_member_id.is_some() && member_open_id.is_some() {
+        anyhow::bail!("Provide only one of 'member_id' or 'member_open_id'");
+    }
+    if explicit_member_id.is_some() && member_email.is_some() {
+        anyhow::bail!("Provide only one of 'member_id' or 'member_email'");
+    }
+    if member_open_id.is_some() && member_email.is_some() {
+        anyhow::bail!("Provide only one of 'member_open_id' or 'member_email'");
+    }
+
+    let member_type = match explicit_member_type.as_deref() {
+        Some("openid") | None if member_open_id.is_some() => "openid".to_string(),
+        Some("email") | None if member_email.is_some() => "email".to_string(),
+        Some("openid") => "openid".to_string(),
+        Some("email") => "email".to_string(),
+        None => "openid".to_string(),
+        Some(other) => anyhow::bail!(
+            "Invalid 'member_type' value '{}'. Supported values: openid, email",
+            other
+        ),
+    };
+
+    let member_id = explicit_member_id
+        .or(member_open_id)
+        .or(member_email)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Missing permission member identifier. Provide 'member_id', 'member_open_id', or 'member_email'"
+            )
+        })?;
+
+    Ok((member_type, member_id))
 }
 
 fn required_doc_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {

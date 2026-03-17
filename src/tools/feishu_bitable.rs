@@ -325,23 +325,25 @@ impl FeishuBitableAppTool {
                     .get("app_token")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("Missing 'app_token' parameter"))?;
-                let member_open_id = args
-                    .get("member_open_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'member_open_id' parameter"))?;
+                let (member_type, member_id) = resolve_permission_member(args)?;
                 let perm = required_drive_permission(args, "perm")?;
                 let notify_lark = optional_bool(args, "notify_lark").unwrap_or(false);
 
                 let member = self
-                    .upsert_member_permission(app_token, member_open_id, perm, notify_lark)
+                    .upsert_member_permission(
+                        app_token,
+                        &member_type,
+                        &member_id,
+                        perm,
+                        notify_lark,
+                    )
                     .await?;
 
                 Ok(json!({
                     "success": true,
                     "app_token": app_token,
-                    "member_open_id": member_open_id,
+                    "member_type": member_type,
+                    "member_id": member_id,
                     "perm": member
                         .get("perm")
                         .cloned()
@@ -404,19 +406,20 @@ impl FeishuBitableAppTool {
     async fn upsert_member_permission(
         &self,
         app_token: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
         let create_payload = self
-            .create_permission_member(app_token, member_open_id, perm, notify_lark)
+            .create_permission_member(app_token, member_type, member_id, perm, notify_lark)
             .await?;
         if has_api_success_code(&create_payload) {
             return Ok(extract_permission_member(&create_payload));
         }
         if permission_member_already_exists(&create_payload) {
             let update_payload = self
-                .update_permission_member(app_token, member_open_id, perm, notify_lark)
+                .update_permission_member(app_token, member_type, member_id, perm, notify_lark)
                 .await?;
             ensure_api_success(&update_payload, "update permission member")?;
             return Ok(extract_permission_member(&update_payload));
@@ -428,7 +431,8 @@ impl FeishuBitableAppTool {
     async fn create_permission_member(
         &self,
         app_token: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
@@ -438,8 +442,8 @@ impl FeishuBitableAppTool {
             app_token
         );
         let body = json!({
-            "member_type": "openid",
-            "member_id": member_open_id,
+            "member_type": member_type,
+            "member_id": member_id,
             "perm": perm
         });
         let query = [
@@ -454,7 +458,8 @@ impl FeishuBitableAppTool {
     async fn update_permission_member(
         &self,
         app_token: &str,
-        member_open_id: &str,
+        member_type: &str,
+        member_id: &str,
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
@@ -462,13 +467,13 @@ impl FeishuBitableAppTool {
             "{}/drive/v1/permissions/{}/members/{}",
             self.client.api_base(),
             app_token,
-            member_open_id
+            urlencoding::encode(member_id)
         );
         let body = json!({
             "token": app_token,
             "type": "bitable",
-            "member_type": "openid",
-            "member_id": member_open_id,
+            "member_type": member_type,
+            "member_id": member_id,
             "perm": perm,
             "notify_lark": notify_lark,
         });
@@ -553,7 +558,14 @@ impl Tool for FeishuBitableAppTool {
                     "properties": {
                         "action": { "const": "set_permission" },
                         "app_token": { "type": "string", "description": "多维表格 token" },
-                        "member_open_id": { "type": "string", "description": "协作者 open_id" },
+                        "member_open_id": { "type": "string", "description": "协作者 open_id（兼容旧参数）" },
+                        "member_email": { "type": "string", "description": "协作者邮箱（兼容旧参数）" },
+                        "member_id": { "type": "string", "description": "协作者标识" },
+                        "member_type": {
+                            "type": "string",
+                            "enum": ["openid", "email"],
+                            "description": "协作者标识类型，默认按 member_open_id/member_email 推断"
+                        },
                         "perm": {
                             "type": "string",
                             "enum": ["view", "edit", "full_access"],
@@ -1922,6 +1934,54 @@ async fn parse_json_or_empty(resp: reqwest::Response) -> anyhow::Result<Value> {
 
 fn optional_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
+}
+
+fn resolve_permission_member(args: &Value) -> anyhow::Result<(String, String)> {
+    let explicit_member_id = optional_string(args, "member_id");
+    let explicit_member_type = optional_string(args, "member_type");
+    let member_open_id = optional_string(args, "member_open_id");
+    let member_email = optional_string(args, "member_email");
+
+    if explicit_member_id.is_some() && member_open_id.is_some() {
+        anyhow::bail!("Provide only one of 'member_id' or 'member_open_id'");
+    }
+    if explicit_member_id.is_some() && member_email.is_some() {
+        anyhow::bail!("Provide only one of 'member_id' or 'member_email'");
+    }
+    if member_open_id.is_some() && member_email.is_some() {
+        anyhow::bail!("Provide only one of 'member_open_id' or 'member_email'");
+    }
+
+    let member_type = match explicit_member_type.as_deref() {
+        Some("openid") | None if member_open_id.is_some() => "openid".to_string(),
+        Some("email") | None if member_email.is_some() => "email".to_string(),
+        Some("openid") => "openid".to_string(),
+        Some("email") => "email".to_string(),
+        None => "openid".to_string(),
+        Some(other) => anyhow::bail!(
+            "Invalid 'member_type' value '{}'. Supported values: openid, email",
+            other
+        ),
+    };
+
+    let member_id = explicit_member_id
+        .or(member_open_id)
+        .or(member_email)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Missing permission member identifier. Provide 'member_id', 'member_open_id', or 'member_email'"
+            )
+        })?;
+
+    Ok((member_type, member_id))
+}
+
+fn optional_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn required_drive_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
