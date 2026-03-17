@@ -408,8 +408,14 @@ mod tests {
     fn rolling_mode_keeps_latest_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
-        let logger =
-            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone(), true, false, false);
+        let logger = RuntimeTraceLogger::new(
+            RuntimeTraceStorageMode::Rolling,
+            2,
+            path.clone(),
+            true,
+            false,
+            false,
+        );
 
         for i in 0..5 {
             let event = RuntimeTraceEvent {
@@ -437,8 +443,14 @@ mod tests {
     fn find_event_by_id_returns_match() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
-        let logger =
-            RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone(), true, false, false);
+        let logger = RuntimeTraceLogger::new(
+            RuntimeTraceStorageMode::Full,
+            100,
+            path.clone(),
+            true,
+            false,
+            false,
+        );
 
         let target_id = "target-event";
         let event = RuntimeTraceEvent {

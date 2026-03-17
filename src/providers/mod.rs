@@ -1625,6 +1625,7 @@ pub fn create_resilient_provider_with_options(
         reliability.provider_retries,
         reliability.provider_backoff_ms,
     )
+    .with_retry_delays(reliability.provider_retry_delays_ms.clone())
     .with_api_keys(reliability.api_keys.clone())
     .with_model_fallbacks(reliability.model_fallbacks.clone())
     .with_vision_override(options.model_support_vision);
@@ -2961,6 +2962,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec![
                 "openrouter".into(),
                 "nonexistent-provider".into(),
@@ -3005,6 +3007,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec!["lmstudio".into(), "ollama".into()],
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),
@@ -3027,6 +3030,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec!["custom:http://host.docker.internal:1234/v1".into()],
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),
@@ -3048,6 +3052,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec![
                 "deepseek".into(),
                 "custom:http://localhost:8080/v1".into(),
@@ -3085,6 +3090,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec!["osaurus".into(), "lmstudio".into()],
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),
@@ -3619,6 +3625,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec!["openai-codex:second".into()],
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),
@@ -3643,6 +3650,7 @@ providers = ["demo-plugin-provider"]
         let reliability = crate::config::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: vec![
                 "openai-codex:second".into(),
                 "custom:http://localhost:8080/v1".into(),

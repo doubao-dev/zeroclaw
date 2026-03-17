@@ -734,7 +734,10 @@ fn effective_progress_mode_for_message(
     channel_name: &str,
     expose_internal_tool_details: bool,
 ) -> ProgressMode {
-    if channel_name.eq_ignore_ascii_case("cli") || channel_name.eq_ignore_ascii_case("daemon") || expose_internal_tool_details {
+    if channel_name.eq_ignore_ascii_case("cli")
+        || channel_name.eq_ignore_ascii_case("daemon")
+        || expose_internal_tool_details
+    {
         ProgressMode::Verbose
     } else if channel_name.eq_ignore_ascii_case("telegram") {
         runtime_telegram_progress_mode()

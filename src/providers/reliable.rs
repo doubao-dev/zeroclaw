@@ -233,6 +233,8 @@ pub struct ReliableProvider {
     providers: Vec<(String, Box<dyn Provider>)>,
     max_retries: u32,
     base_backoff_ms: u64,
+    /// Fixed backoff delays for each retry attempt. If empty, use exponential backoff.
+    retry_delays_ms: Vec<u64>,
     /// Extra API keys for rotation (index tracks round-robin position).
     api_keys: Vec<String>,
     key_index: AtomicUsize,
@@ -254,12 +256,19 @@ impl ReliableProvider {
             providers,
             max_retries,
             base_backoff_ms: base_backoff_ms.max(50),
+            retry_delays_ms: Vec::new(),
             api_keys: Vec::new(),
             key_index: AtomicUsize::new(0),
             model_fallbacks: HashMap::new(),
             provider_model_fallbacks: HashMap::new(),
             vision_override: None,
         }
+    }
+
+    /// Set fixed retry delays (overrides exponential backoff).
+    pub fn with_retry_delays(mut self, delays: Vec<u64>) -> Self {
+        self.retry_delays_ms = delays;
+        self
     }
 
     /// Set additional API keys for round-robin rotation on rate-limit errors.
@@ -353,6 +362,29 @@ impl ReliableProvider {
         } else {
             base
         }
+    }
+
+    /// Compute backoff for a specific retry attempt.
+    /// Uses fixed delays if configured, otherwise exponential backoff.
+    fn compute_backoff_for_attempt(
+        &self,
+        attempt: u32,
+        current_backoff_ms: u64,
+        err: &anyhow::Error,
+    ) -> u64 {
+        // If fixed delays are configured and this attempt has a delay defined
+        if !self.retry_delays_ms.is_empty() {
+            let idx = attempt as usize;
+            if idx < self.retry_delays_ms.len() {
+                let delay = self.retry_delays_ms[idx];
+                // Respect Retry-After header if present, but use the configured delay as minimum
+                return self.compute_backoff(delay, err);
+            }
+            // Fall through to exponential backoff if we've exhausted fixed delays
+        }
+
+        // Default exponential backoff
+        self.compute_backoff(current_backoff_ms, err)
     }
 }
 
@@ -458,7 +490,8 @@ impl Provider for ReliableProvider {
                                 }
 
                                 if attempt < self.max_retries {
-                                    let wait = self.compute_backoff(backoff_ms, &e);
+                                    let wait =
+                                        self.compute_backoff_for_attempt(attempt, backoff_ms, &e);
                                     tracing::warn!(
                                         provider = provider_name,
                                         model = sent_model,
@@ -581,7 +614,8 @@ impl Provider for ReliableProvider {
                                 }
 
                                 if attempt < self.max_retries {
-                                    let wait = self.compute_backoff(backoff_ms, &e);
+                                    let wait =
+                                        self.compute_backoff_for_attempt(attempt, backoff_ms, &e);
                                     tracing::warn!(
                                         provider = provider_name,
                                         model = sent_model,
@@ -712,7 +746,8 @@ impl Provider for ReliableProvider {
                                 }
 
                                 if attempt < self.max_retries {
-                                    let wait = self.compute_backoff(backoff_ms, &e);
+                                    let wait =
+                                        self.compute_backoff_for_attempt(attempt, backoff_ms, &e);
                                     tracing::warn!(
                                         provider = provider_name,
                                         model = sent_model,
@@ -828,7 +863,8 @@ impl Provider for ReliableProvider {
                                 }
 
                                 if attempt < self.max_retries {
-                                    let wait = self.compute_backoff(backoff_ms, &e);
+                                    let wait =
+                                        self.compute_backoff_for_attempt(attempt, backoff_ms, &e);
                                     tracing::warn!(
                                         provider = provider_name,
                                         model = sent_model,

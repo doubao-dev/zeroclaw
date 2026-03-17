@@ -1856,7 +1856,8 @@ pub async fn run_tool_call_loop(
                 .try_with(|p| *p)
                 .unwrap_or(crate::config::EmptyResponsePolicy::Error);
             let empty_response_signal = display_text.trim().is_empty();
-            if empty_response_signal && empty_response_policy != crate::config::EmptyResponsePolicy::Ignore
+            if empty_response_signal
+                && empty_response_policy != crate::config::EmptyResponsePolicy::Ignore
             {
                 if !empty_response_retry_used && iteration + 1 < max_iterations {
                     empty_response_retry_used = true;
@@ -1898,7 +1899,9 @@ pub async fn run_tool_call_loop(
                     }),
                 );
                 if empty_response_policy == crate::config::EmptyResponsePolicy::Error {
-                    anyhow::bail!("Provider returned empty response; refusing to send blank reply.");
+                    anyhow::bail!(
+                        "Provider returned empty response; refusing to send blank reply."
+                    );
                 }
                 tracing::warn!("Provider returned empty response; returning placeholder text.");
                 display_text = "Provider returned empty response.".to_string();
@@ -4907,7 +4910,10 @@ mod tests {
         let provider = ScriptedProvider::from_text_responses(vec!["", "ok"]);
 
         let tools_registry: Vec<Box<dyn Tool>> = vec![];
-        let mut history = vec![ChatMessage::system("test-system"), ChatMessage::user("hello")];
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("hello"),
+        ];
         let observer = NoopObserver;
 
         let result = scope_empty_response_policy(
@@ -7407,10 +7413,16 @@ Let me check the result."#;
     #[test]
     fn local_visible_progress_delta_supports_line_and_block_progress() {
         let line = format!("{DRAFT_PROGRESS_SENTINEL}🤔 Thinking...\n");
-        assert_eq!(local_visible_progress_delta(&line), Some("🤔 Thinking...\n"));
+        assert_eq!(
+            local_visible_progress_delta(&line),
+            Some("🤔 Thinking...\n")
+        );
 
         let block = format!("{DRAFT_PROGRESS_BLOCK_SENTINEL}⏳ shell: ls -la\n");
-        assert_eq!(local_visible_progress_delta(&block), Some("⏳ shell: ls -la\n"));
+        assert_eq!(
+            local_visible_progress_delta(&block),
+            Some("⏳ shell: ls -la\n")
+        );
 
         assert_eq!(local_visible_progress_delta("final answer"), None);
     }

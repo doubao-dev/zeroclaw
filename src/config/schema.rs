@@ -4082,6 +4082,10 @@ pub struct ReliabilityConfig {
     /// Base backoff (ms) for provider retry delay.
     #[serde(default = "default_provider_backoff_ms")]
     pub provider_backoff_ms: u64,
+    /// Fixed backoff delays (ms) for each retry attempt. If set, overrides exponential backoff.
+    /// Example: `[30000, 300000]` means wait 30s after first failure, 300s after second failure.
+    #[serde(default)]
+    pub provider_retry_delays_ms: Vec<u64>,
     /// Fallback provider chain (e.g. `["anthropic", "openai"]`).
     #[serde(default)]
     pub fallback_providers: Vec<String>,
@@ -4139,6 +4143,7 @@ impl Default for ReliabilityConfig {
         Self {
             provider_retries: default_provider_retries(),
             provider_backoff_ms: default_provider_backoff_ms(),
+            provider_retry_delays_ms: Vec::new(),
             fallback_providers: Vec::new(),
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),

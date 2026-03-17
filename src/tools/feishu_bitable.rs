@@ -57,10 +57,7 @@ impl FeishuTenantClient {
             }
         }
 
-        let url = format!(
-            "{}/auth/v3/tenant_access_token/internal",
-            self.api_base()
-        );
+        let url = format!("{}/auth/v3/tenant_access_token/internal", self.api_base());
         let body = json!({
             "app_id": self.app_id,
             "app_secret": self.app_secret,
@@ -231,7 +228,12 @@ pub struct FeishuBitableAppTool {
 }
 
 impl FeishuBitableAppTool {
-    pub fn new(app_id: String, app_secret: String, use_feishu: bool, security: Arc<SecurityPolicy>) -> Self {
+    pub fn new(
+        app_id: String,
+        app_secret: String,
+        use_feishu: bool,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
         Self {
             client: FeishuTenantClient::new(app_id, app_secret, use_feishu),
             security,
@@ -276,10 +278,7 @@ impl FeishuBitableAppTool {
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("Missing 'app_token' parameter"))?;
                 let url = format!("{}/bitable/v1/apps/{}", self.client.api_base(), app_token);
-                let payload = self
-                    .client
-                    .authed_request(Method::GET, &url, None)
-                    .await?;
+                let payload = self.client.authed_request(Method::GET, &url, None).await?;
                 Ok(json!({ "app": payload.get("data").and_then(|v| v.get("app")).cloned() }))
             }
             "patch" => {
@@ -295,7 +294,9 @@ impl FeishuBitableAppTool {
                     app["is_advanced"] = Value::Bool(is_advanced);
                 }
                 if app.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                    anyhow::bail!("No fields provided for patch; supply 'name' and/or 'is_advanced'");
+                    anyhow::bail!(
+                        "No fields provided for patch; supply 'name' and/or 'is_advanced'"
+                    );
                 }
                 let url = format!("{}/bitable/v1/apps/{}", self.client.api_base(), app_token);
                 let payload = self
@@ -393,10 +394,7 @@ impl FeishuBitableAppTool {
                     url.push_str(&format!("page_token={}", urlencoding::encode(token)));
                 }
 
-                let payload = self
-                    .client
-                    .authed_request(Method::GET, &url, None)
-                    .await?;
+                let payload = self.client.authed_request(Method::GET, &url, None).await?;
                 let files = payload
                     .get("data")
                     .and_then(|v| v.get("files"))
@@ -661,7 +659,12 @@ pub struct FeishuBitableAppTableTool {
 }
 
 impl FeishuBitableAppTableTool {
-    pub fn new(app_id: String, app_secret: String, use_feishu: bool, security: Arc<SecurityPolicy>) -> Self {
+    pub fn new(
+        app_id: String,
+        app_secret: String,
+        use_feishu: bool,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
         Self {
             client: FeishuTenantClient::new(app_id, app_secret, use_feishu),
             security,
@@ -714,7 +717,11 @@ impl FeishuBitableAppTableTool {
                 }
 
                 let table = Value::Object(table_obj);
-                let url = format!("{}/bitable/v1/apps/{}/tables", self.client.api_base(), app_token);
+                let url = format!(
+                    "{}/bitable/v1/apps/{}/tables",
+                    self.client.api_base(),
+                    app_token
+                );
                 let payload = self
                     .client
                     .authed_request(Method::POST, &url, Some(json!({ "table": table })))
@@ -744,10 +751,7 @@ impl FeishuBitableAppTableTool {
                     url.push(sep);
                     url.push_str(&format!("page_token={}", urlencoding::encode(token)));
                 }
-                let payload = self
-                    .client
-                    .authed_request(Method::GET, &url, None)
-                    .await?;
+                let payload = self.client.authed_request(Method::GET, &url, None).await?;
                 let data = payload.get("data").cloned().unwrap_or_else(|| json!({}));
                 Ok(json!({
                     "tables": data.get("items").cloned(),
@@ -806,7 +810,9 @@ impl FeishuBitableAppTableTool {
                     .client
                     .authed_request(Method::POST, &url, Some(json!({ "tables": tables })))
                     .await?;
-                Ok(json!({ "table_ids": payload.get("data").and_then(|v| v.get("table_ids")).cloned() }))
+                Ok(
+                    json!({ "table_ids": payload.get("data").and_then(|v| v.get("table_ids")).cloned() }),
+                )
             }
             "batch_delete" => {
                 let table_ids = args
@@ -983,7 +989,12 @@ pub struct FeishuBitableAppTableFieldTool {
 }
 
 impl FeishuBitableAppTableFieldTool {
-    pub fn new(app_id: String, app_secret: String, use_feishu: bool, security: Arc<SecurityPolicy>) -> Self {
+    pub fn new(
+        app_id: String,
+        app_secret: String,
+        use_feishu: bool,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
         Self {
             client: FeishuTenantClient::new(app_id, app_secret, use_feishu),
             security,
@@ -1128,7 +1139,10 @@ impl FeishuBitableAppTableFieldTool {
                     table_id,
                     field_id
                 );
-                let payload = self.client.authed_request(Method::DELETE, &url, None).await?;
+                let payload = self
+                    .client
+                    .authed_request(Method::DELETE, &url, None)
+                    .await?;
                 let _ = payload;
                 Ok(json!({ "success": true }))
             }
@@ -1254,7 +1268,12 @@ pub struct FeishuBitableAppTableViewTool {
 }
 
 impl FeishuBitableAppTableViewTool {
-    pub fn new(app_id: String, app_secret: String, use_feishu: bool, security: Arc<SecurityPolicy>) -> Self {
+    pub fn new(
+        app_id: String,
+        app_secret: String,
+        use_feishu: bool,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
         Self {
             client: FeishuTenantClient::new(app_id, app_secret, use_feishu),
             security,
@@ -1348,7 +1367,10 @@ impl FeishuBitableAppTableViewTool {
                     .get("view_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("Missing 'view_id' parameter"))?;
-                let view_name = args.get("view_name").and_then(Value::as_str).map(str::to_string);
+                let view_name = args
+                    .get("view_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/views/{}",
                     self.client.api_base(),
@@ -1374,7 +1396,10 @@ impl FeishuBitableAppTableViewTool {
                     table_id,
                     view_id
                 );
-                let payload = self.client.authed_request(Method::DELETE, &url, None).await?;
+                let payload = self
+                    .client
+                    .authed_request(Method::DELETE, &url, None)
+                    .await?;
                 let _ = payload;
                 Ok(json!({ "success": true }))
             }
@@ -1507,7 +1532,12 @@ pub struct FeishuBitableAppTableRecordTool {
 }
 
 impl FeishuBitableAppTableRecordTool {
-    pub fn new(app_id: String, app_secret: String, use_feishu: bool, security: Arc<SecurityPolicy>) -> Self {
+    pub fn new(
+        app_id: String,
+        app_secret: String,
+        use_feishu: bool,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
         Self {
             client: FeishuTenantClient::new(app_id, app_secret, use_feishu),
             security,
@@ -1628,7 +1658,9 @@ impl FeishuBitableAppTableRecordTool {
                     return Ok(json!({ "error": "records is required and cannot be empty" }));
                 }
                 if records.len() > 500 {
-                    return Ok(json!({ "error": "records count exceeds limit (maximum 500)", "received_count": records.len() }));
+                    return Ok(
+                        json!({ "error": "records count exceeds limit (maximum 500)", "received_count": records.len() }),
+                    );
                 }
                 for record in records {
                     let fields = record
@@ -1647,7 +1679,9 @@ impl FeishuBitableAppTableRecordTool {
                     .client
                     .authed_request(Method::POST, &url, Some(json!({ "records": records })))
                     .await?;
-                Ok(json!({ "records": payload.get("data").and_then(|v| v.get("records")).cloned() }))
+                Ok(
+                    json!({ "records": payload.get("data").and_then(|v| v.get("records")).cloned() }),
+                )
             }
             "batch_update" => {
                 let records = args
@@ -1658,7 +1692,9 @@ impl FeishuBitableAppTableRecordTool {
                     return Ok(json!({ "error": "records is required and cannot be empty" }));
                 }
                 if records.len() > 500 {
-                    return Ok(json!({ "error": "records count exceeds limit (maximum 500)", "received_count": records.len() }));
+                    return Ok(
+                        json!({ "error": "records count exceeds limit (maximum 500)", "received_count": records.len() }),
+                    );
                 }
                 for record in records {
                     let fields = record
@@ -1677,7 +1713,9 @@ impl FeishuBitableAppTableRecordTool {
                     .client
                     .authed_request(Method::POST, &url, Some(json!({ "records": records })))
                     .await?;
-                Ok(json!({ "records": payload.get("data").and_then(|v| v.get("records")).cloned() }))
+                Ok(
+                    json!({ "records": payload.get("data").and_then(|v| v.get("records")).cloned() }),
+                )
             }
             "batch_delete" => {
                 let record_ids = args
@@ -1688,7 +1726,9 @@ impl FeishuBitableAppTableRecordTool {
                     return Ok(json!({ "error": "record_ids is required and cannot be empty" }));
                 }
                 if record_ids.len() > 500 {
-                    return Ok(json!({ "error": "record_ids count exceeds limit (maximum 500)", "received_count": record_ids.len() }));
+                    return Ok(
+                        json!({ "error": "record_ids count exceeds limit (maximum 500)", "received_count": record_ids.len() }),
+                    );
                 }
                 let url = format!(
                     "{}/bitable/v1/apps/{}/tables/{}/records/batch_delete",
@@ -1698,7 +1738,11 @@ impl FeishuBitableAppTableRecordTool {
                 );
                 let payload = self
                     .client
-                    .authed_request(Method::POST, &url, Some(json!({ "record_ids": record_ids })))
+                    .authed_request(
+                        Method::POST,
+                        &url,
+                        Some(json!({ "record_ids": record_ids })),
+                    )
                     .await?;
                 let _ = payload;
                 Ok(json!({ "success": true }))
@@ -1728,16 +1772,16 @@ impl FeishuBitableAppTableRecordTool {
                 }
                 if let Some(filter) = args.get("filter") {
                     let mut filter = filter.clone();
-                    if let Some(conditions) = filter
-                        .get_mut("conditions")
-                        .and_then(Value::as_array_mut)
+                    if let Some(conditions) =
+                        filter.get_mut("conditions").and_then(Value::as_array_mut)
                     {
                         for cond in conditions.iter_mut() {
                             let op = cond.get("operator").and_then(Value::as_str);
                             if matches!(op, Some("isEmpty") | Some("isNotEmpty")) {
                                 if cond.get("value").is_none() {
-                                    cond.as_object_mut()
-                                        .map(|o| o.insert("value".to_string(), Value::Array(vec![])));
+                                    cond.as_object_mut().map(|o| {
+                                        o.insert("value".to_string(), Value::Array(vec![]))
+                                    });
                                 }
                             }
                         }
@@ -1747,7 +1791,9 @@ impl FeishuBitableAppTableRecordTool {
                 if let Some(sort) = args.get("sort").and_then(Value::as_array) {
                     body["sort"] = Value::Array(sort.clone());
                 }
-                if let Some(automatic_fields) = args.get("automatic_fields").and_then(Value::as_bool) {
+                if let Some(automatic_fields) =
+                    args.get("automatic_fields").and_then(Value::as_bool)
+                {
                     body["automatic_fields"] = Value::Bool(automatic_fields);
                 }
                 let payload = self
@@ -1959,7 +2005,8 @@ async fn parse_json_or_empty(resp: reqwest::Response) -> anyhow::Result<Value> {
     if bytes.is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_slice(&bytes).or_else(|_| Ok(json!({ "raw": String::from_utf8_lossy(&bytes) })))
+    serde_json::from_slice(&bytes)
+        .or_else(|_| Ok(json!({ "raw": String::from_utf8_lossy(&bytes) })))
 }
 
 fn optional_bool(args: &Value, key: &str) -> Option<bool> {
@@ -2085,7 +2132,10 @@ fn ensure_api_success(payload: &Value, context: &str) -> anyhow::Result<()> {
         .get("msg")
         .and_then(Value::as_str)
         .unwrap_or("unknown error");
-    anyhow::bail!("{context} api error: code={code}, msg={msg}, body={}", sanitize_api_json(payload));
+    anyhow::bail!(
+        "{context} api error: code={code}, msg={msg}, body={}",
+        sanitize_api_json(payload)
+    );
 }
 
 fn sanitize_api_json(payload: &Value) -> Value {
