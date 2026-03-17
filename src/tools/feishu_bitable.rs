@@ -360,17 +360,23 @@ impl FeishuBitableAppTool {
                     )
                     .await?;
 
-                Ok(json!({
+                let mut result = json!({
                     "success": true,
                     "app_token": app_token,
                     "member_type": member_type,
                     "member_id": member_id,
-                    "perm": member
+                    "perm": Value::String(perm.to_string()),
+                });
+                if perm == "remove" {
+                    result["removed"] = Value::Bool(true);
+                } else {
+                    result["perm"] = member
                         .get("perm")
                         .cloned()
-                        .unwrap_or_else(|| Value::String(perm.to_string())),
-                    "member": member,
-                }))
+                        .unwrap_or_else(|| Value::String(perm.to_string()));
+                    result["member"] = member;
+                }
+                Ok(result)
             }
             "list" => {
                 let folder_token = args.get("folder_token").and_then(Value::as_str);
@@ -429,6 +435,11 @@ impl FeishuBitableAppTool {
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
+        if perm == "remove" {
+            self.remove_permission_member(app_token, member_type, member_id)
+                .await?;
+            return Ok(json!({}));
+        }
         let create_payload = self
             .create_permission_member(app_token, member_type, member_id, perm, notify_lark)
             .await?;
@@ -502,6 +513,34 @@ impl FeishuBitableAppTool {
         self.client
             .authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
             .await
+    }
+
+    async fn remove_permission_member(
+        &self,
+        app_token: &str,
+        member_type: &str,
+        member_id: &str,
+    ) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/drive/v1/permissions/{}/members/{}",
+            self.client.api_base(),
+            app_token,
+            urlencoding::encode(member_id)
+        );
+        let query = [
+            ("type", "bitable".to_string()),
+            ("member_type", member_type.to_string()),
+        ];
+        let body = json!({
+            "perm_type": "container",
+            "type": "user"
+        });
+        let payload = self
+            .client
+            .authed_api_request_with_query(Method::DELETE, &url, Some(body), Some(&query))
+            .await?;
+        ensure_api_success(&payload, "remove permission member")?;
+        Ok(())
     }
 
     async fn verify_app_exists(&self, app_token: &str) -> anyhow::Result<Value> {
@@ -596,7 +635,7 @@ impl Tool for FeishuBitableAppTool {
                         },
                         "perm": {
                             "type": "string",
-                            "enum": ["view", "edit", "full_access"],
+                            "enum": ["view", "edit", "full_access", "remove"],
                             "description": "权限级别"
                         },
                         "notify_lark": {
@@ -2070,9 +2109,9 @@ fn required_drive_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&
         .ok_or_else(|| anyhow::anyhow!("Missing '{}' parameter", key))?;
 
     match value {
-        "view" | "edit" | "full_access" => Ok(value),
+        "view" | "edit" | "full_access" | "remove" => Ok(value),
         _ => anyhow::bail!(
-            "Invalid '{}' value '{}'. Supported values: view, edit, full_access",
+            "Invalid '{}' value '{}'. Supported values: view, edit, full_access, remove",
             key,
             value
         ),

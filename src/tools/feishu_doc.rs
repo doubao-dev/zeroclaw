@@ -449,17 +449,23 @@ impl FeishuDocTool {
             .upsert_member_permission(&doc_token, &member_type, &member_id, perm, notify_lark)
             .await?;
 
-        Ok(json!({
+        let mut result = json!({
             "success": true,
             "document_id": doc_token,
             "member_type": member_type,
             "member_id": member_id,
-            "perm": member
+            "perm": Value::String(perm.to_string()),
+        });
+        if perm == "remove" {
+            result["removed"] = Value::Bool(true);
+        } else {
+            result["perm"] = member
                 .get("perm")
                 .cloned()
-                .unwrap_or_else(|| Value::String(perm.to_string())),
-            "member": member,
-        }))
+                .unwrap_or_else(|| Value::String(perm.to_string()));
+            result["member"] = member;
+        }
+        Ok(result)
     }
 
     async fn action_list_blocks(&self, args: &Value) -> anyhow::Result<Value> {
@@ -924,6 +930,11 @@ impl FeishuDocTool {
         perm: &str,
         notify_lark: bool,
     ) -> anyhow::Result<Value> {
+        if perm == "remove" {
+            self.remove_permission_member(document_id, member_type, member_id)
+                .await?;
+            return Ok(json!({}));
+        }
         let create_payload = self
             .create_permission_member(document_id, member_type, member_id, perm, notify_lark)
             .await?;
@@ -995,6 +1006,33 @@ impl FeishuDocTool {
         ];
         self.authed_api_request_with_query(Method::POST, &url, Some(body), Some(&query))
             .await
+    }
+
+    async fn remove_permission_member(
+        &self,
+        document_id: &str,
+        member_type: &str,
+        member_id: &str,
+    ) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/drive/v1/permissions/{}/members/{}",
+            self.api_base(),
+            document_id,
+            urlencoding::encode(member_id)
+        );
+        let query = [
+            ("type", "docx".to_string()),
+            ("member_type", member_type.to_string()),
+        ];
+        let body = json!({
+            "perm_type": "container",
+            "type": "user"
+        });
+        let payload = self
+            .authed_api_request_with_query(Method::DELETE, &url, Some(body), Some(&query))
+            .await?;
+        ensure_api_success(&payload, "remove permission member")?;
+        Ok(())
     }
 
     async fn enable_link_share(&self, document_id: &str) -> anyhow::Result<()> {
@@ -1354,7 +1392,7 @@ impl Tool for FeishuDocTool {
                 },
                 "perm": {
                     "type": "string",
-                    "enum": ["view", "edit", "full_access"],
+                    "enum": ["view", "edit", "full_access", "remove"],
                     "description": "Permission level for set_permission"
                 },
                 "notify_lark": {
@@ -1667,9 +1705,9 @@ fn required_doc_permission<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a
         .ok_or_else(|| anyhow::anyhow!("Missing '{}' parameter", key))?;
 
     match value {
-        "view" | "edit" | "full_access" => Ok(value),
+        "view" | "edit" | "full_access" | "remove" => Ok(value),
         _ => anyhow::bail!(
-            "Invalid '{}' value '{}'. Supported values: view, edit, full_access",
+            "Invalid '{}' value '{}'. Supported values: view, edit, full_access, remove",
             key,
             value
         ),
