@@ -9,7 +9,8 @@ use super::agent_selection::{select_agent_with_load, AgentSelectionPolicy};
 use super::orchestration_settings::load_orchestration_settings;
 use super::subagent_registry::{SubAgentRegistry, SubAgentSession, SubAgentStatus};
 use super::traits::{Tool, ToolResult};
-use crate::config::{DelegateAgentConfig, SubAgentsConfig};
+use crate::agent::loop_::{run_tool_call_loop_with_config, LoopDetectionConfig};
+use crate::config::{AgentConfig, DelegateAgentConfig, SubAgentsConfig};
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::security::policy::ToolOperation;
@@ -39,6 +40,7 @@ pub struct SubAgentSpawnTool {
     subagent_settings: SubAgentsConfig,
     load_tracker: AgentLoadTracker,
     runtime_config_path: Option<PathBuf>,
+    agent_config: AgentConfig,
 }
 
 impl SubAgentSpawnTool {
@@ -72,12 +74,19 @@ impl SubAgentSpawnTool {
             subagent_settings,
             load_tracker: AgentLoadTracker::new(),
             runtime_config_path,
+            agent_config: AgentConfig::default(),
         }
     }
 
     /// Reuse a shared runtime load tracker.
     pub fn with_load_tracker(mut self, load_tracker: AgentLoadTracker) -> Self {
         self.load_tracker = load_tracker;
+        self
+    }
+
+    /// Attach agent configuration for loop detection and other agent-level settings.
+    pub fn with_agent_config(mut self, config: AgentConfig) -> Self {
+        self.agent_config = config;
         self
     }
 
@@ -349,6 +358,11 @@ impl Tool for SubAgentSpawnTool {
         let registry = self.registry.clone();
         let sid = session_id.clone();
         let mut bg_load_lease = load_lease;
+        let ld_cfg = LoopDetectionConfig {
+            no_progress_threshold: self.agent_config.loop_detection_no_progress_threshold,
+            ping_pong_cycles: self.agent_config.loop_detection_ping_pong_cycles,
+            failure_streak_threshold: self.agent_config.loop_detection_failure_streak,
+        };
 
         let handle = tokio::spawn(async move {
             let result = if is_agentic {
@@ -359,6 +373,7 @@ impl Tool for SubAgentSpawnTool {
                     &full_prompt,
                     &parent_tools,
                     &multimodal_config,
+                    &ld_cfg,
                 )
                 .await
             } else {
@@ -517,6 +532,7 @@ async fn run_agentic_background(
     full_prompt: &str,
     parent_tools: &[Arc<dyn Tool>],
     multimodal_config: &crate::config::MultimodalConfig,
+    loop_detection_config: &LoopDetectionConfig,
 ) -> anyhow::Result<ToolResult> {
     if agent_config.allowed_tools.is_empty() {
         return Ok(ToolResult {
@@ -568,7 +584,7 @@ async fn run_agentic_background(
 
     let result = tokio::time::timeout(
         Duration::from_secs(SPAWN_TIMEOUT_SECS),
-        crate::agent::loop_::run_tool_call_loop(
+        run_tool_call_loop_with_config(
             provider,
             &mut history,
             &sub_tools,
@@ -585,6 +601,7 @@ async fn run_agentic_background(
             None,
             None,
             &[],
+            loop_detection_config.clone(),
         ),
     )
     .await;

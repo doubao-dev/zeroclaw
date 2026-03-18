@@ -2,8 +2,8 @@ use super::agent_load_tracker::AgentLoadTracker;
 use super::agent_selection::{select_agent_with_load, AgentSelectionPolicy};
 use super::orchestration_settings::load_orchestration_settings;
 use super::traits::{Tool, ToolResult};
-use crate::agent::loop_::run_tool_call_loop;
-use crate::config::{AgentTeamsConfig, DelegateAgentConfig};
+use crate::agent::loop_::{run_tool_call_loop_with_config, LoopDetectionConfig};
+use crate::config::{AgentConfig, AgentTeamsConfig, DelegateAgentConfig};
 use crate::coordination::{CoordinationEnvelope, CoordinationPayload, InMemoryMessageBus};
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
@@ -53,6 +53,8 @@ pub struct DelegateTool {
     load_tracker: AgentLoadTracker,
     /// Optional runtime config file path for hot-reloaded orchestration settings.
     runtime_config_path: Option<PathBuf>,
+    /// Agent configuration for loop detection and other agent-level settings.
+    agent_config: AgentConfig,
 }
 
 impl DelegateTool {
@@ -89,6 +91,7 @@ impl DelegateTool {
             team_settings: AgentTeamsConfig::default(),
             load_tracker: AgentLoadTracker::new(),
             runtime_config_path: None,
+            agent_config: AgentConfig::default(),
         }
     }
 
@@ -131,6 +134,7 @@ impl DelegateTool {
             team_settings: AgentTeamsConfig::default(),
             load_tracker: AgentLoadTracker::new(),
             runtime_config_path: None,
+            agent_config: AgentConfig::default(),
         }
     }
 
@@ -170,6 +174,12 @@ impl DelegateTool {
     /// Reuse a shared runtime load tracker.
     pub fn with_load_tracker(mut self, load_tracker: AgentLoadTracker) -> Self {
         self.load_tracker = load_tracker;
+        self
+    }
+
+    /// Attach agent configuration for loop detection and other agent-level settings.
+    pub fn with_agent_config(mut self, config: AgentConfig) -> Self {
+        self.agent_config = config;
         self
     }
 
@@ -585,9 +595,15 @@ impl DelegateTool {
 
         let noop_observer = NoopObserver;
 
+        let ld_cfg = LoopDetectionConfig {
+            no_progress_threshold: self.agent_config.loop_detection_no_progress_threshold,
+            ping_pong_cycles: self.agent_config.loop_detection_ping_pong_cycles,
+            failure_streak_threshold: self.agent_config.loop_detection_failure_streak,
+        };
+
         let result = tokio::time::timeout(
             Duration::from_secs(DELEGATE_AGENTIC_TIMEOUT_SECS),
-            run_tool_call_loop(
+            run_tool_call_loop_with_config(
                 provider,
                 &mut history,
                 &sub_tools,
@@ -604,6 +620,7 @@ impl DelegateTool {
                 None,
                 None,
                 &[],
+                ld_cfg,
             ),
         )
         .await;

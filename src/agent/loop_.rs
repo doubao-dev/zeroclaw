@@ -39,8 +39,9 @@ mod execution;
 mod history;
 mod parsing;
 
+pub use detection::LoopDetectionConfig;
 use context::{build_context, build_hardware_context};
-use detection::{DetectionVerdict, LoopDetectionConfig, LoopDetector};
+use detection::{DetectionVerdict, LoopDetector};
 use execution::{
     execute_tools_parallel, execute_tools_sequential, should_execute_tools_in_parallel,
     ToolExecutionOutcome,
@@ -314,7 +315,7 @@ pub(crate) struct NonCliApprovalContext {
 
 tokio::task_local! {
     static TOOL_LOOP_NON_CLI_APPROVAL_CONTEXT: Option<NonCliApprovalContext>;
-    static LOOP_DETECTION_CONFIG: LoopDetectionConfig;
+    pub(crate) static LOOP_DETECTION_CONFIG: LoopDetectionConfig;
     static SAFETY_HEARTBEAT_CONFIG: Option<SafetyHeartbeatConfig>;
     static TOOL_LOOP_PROGRESS_MODE: ProgressMode;
     static TOOL_LOOP_COST_ENFORCEMENT_CONTEXT: Option<CostEnforcementContext>;
@@ -2621,6 +2622,53 @@ pub async fn run_tool_call_loop(
         }),
     );
     anyhow::bail!("Agent exceeded maximum tool iterations ({max_iterations})")
+}
+
+/// Wrapper function for run_tool_call_loop that injects loop detection configuration.
+/// This is used by sub-agent tools (delegate, subagent_spawn) to ensure they
+/// respect the configured loop detection thresholds.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_tool_call_loop_with_config(
+    provider: &dyn Provider,
+    history: &mut Vec<ChatMessage>,
+    tools_registry: &[Box<dyn Tool>],
+    observer: &dyn Observer,
+    provider_name: &str,
+    model: &str,
+    temperature: f64,
+    silent: bool,
+    approval: Option<&ApprovalManager>,
+    channel_name: &str,
+    multimodal_config: &crate::config::MultimodalConfig,
+    max_tool_iterations: usize,
+    cancellation_token: Option<CancellationToken>,
+    on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
+    loop_detection_config: LoopDetectionConfig,
+) -> Result<String> {
+    LOOP_DETECTION_CONFIG.scope(
+        loop_detection_config,
+        run_tool_call_loop(
+            provider,
+            history,
+            tools_registry,
+            observer,
+            provider_name,
+            model,
+            temperature,
+            silent,
+            approval,
+            channel_name,
+            multimodal_config,
+            max_tool_iterations,
+            cancellation_token,
+            on_delta,
+            hooks,
+            excluded_tools,
+        ),
+    )
+    .await
 }
 
 /// Build the tool instruction block for the system prompt from concrete tool

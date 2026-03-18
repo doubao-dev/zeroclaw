@@ -19,7 +19,7 @@ const OUTPUT_HASH_PREFIX_BYTES: usize = 4096;
 
 /// Tuning knobs for each detection strategy.
 #[derive(Debug, Clone)]
-pub(crate) struct LoopDetectionConfig {
+pub struct LoopDetectionConfig {
     /// Identical (tool + args + output) repetitions before triggering.
     /// `0` = disabled.  Default: `3`.
     pub no_progress_threshold: usize,
