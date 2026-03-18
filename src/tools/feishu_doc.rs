@@ -278,29 +278,11 @@ impl FeishuDocTool {
     async fn action_write(&self, args: &Value) -> anyhow::Result<Value> {
         let doc_token = self.resolve_doc_token(args).await?;
         let content = required_string(args, "content")?;
-        let root_block_id = self.get_root_block_id(&doc_token).await?;
-
-        // Convert first, then delete — prevents data loss if conversion fails
-        let converted = self.convert_markdown_blocks(&content).await?;
-        if converted.is_empty() {
-            anyhow::bail!(
-                "markdown conversion produced no blocks — refusing to delete existing content"
-            );
-        }
-
-        let root_block = self.get_block(&doc_token, &root_block_id).await?;
-        let root_children = extract_child_ids(&root_block);
-        if !root_children.is_empty() {
-            self.batch_delete_children(&doc_token, &root_block_id, 0, root_children.len())
-                .await?;
-        }
-
-        self.insert_children_blocks(&doc_token, &root_block_id, None, converted.clone())
-            .await?;
+        let written = self.replace_document_content(&doc_token, &content).await?;
 
         Ok(json!({
             "success": true,
-            "blocks_written": converted.len(),
+            "blocks_written": written,
         }))
     }
 
@@ -327,6 +309,11 @@ impl FeishuDocTool {
         let title = required_string(args, "title")?;
         let folder_token = optional_string(args, "folder_token");
         let owner_open_id = optional_string(args, "owner_open_id");
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty());
 
         let mut create_body = json!({ "title": title });
         if let Some(folder) = &folder_token {
@@ -405,6 +392,25 @@ impl FeishuDocTool {
                         }
                     }
 
+                    let mut blocks_written: Option<usize> = None;
+                    if let Some(content) = &content {
+                        match self
+                            .write_created_document_content_with_retry(&doc_id, content)
+                            .await
+                        {
+                            Ok(write_result) => {
+                                blocks_written = Some(write_result);
+                            }
+                            Err(e) => {
+                                anyhow::bail!(
+                                    "document created (id={}) but content write failed: {}",
+                                    doc_id,
+                                    e
+                                );
+                            }
+                        }
+                    }
+
                     let mut result = json!({
                         "document_id": doc_id,
                         "title": title,
@@ -413,6 +419,10 @@ impl FeishuDocTool {
                         "verification_method": "docx raw_content",
                         "verification_note": "Do not use curl/http_request/web_fetch/browser tools on the returned Feishu URL to verify creation. This document was already verified through the Feishu API.",
                     });
+                    if let Some(n) = blocks_written {
+                        result["blocks_written"] =
+                            Value::Number(serde_json::Number::from(n as u64));
+                    }
                     if !warnings.is_empty() {
                         result["warning"] = Value::String(warnings.join("; "));
                     }
@@ -865,6 +875,71 @@ impl FeishuDocTool {
         }
 
         Ok(Vec::new())
+    }
+
+    async fn replace_document_content(
+        &self,
+        doc_token: &str,
+        content: &str,
+    ) -> anyhow::Result<usize> {
+        let root_block_id = self.get_root_block_id(doc_token).await?;
+
+        // Convert first, then delete — prevents data loss if conversion fails
+        let converted = self.convert_markdown_blocks(content).await?;
+        if converted.is_empty() {
+            anyhow::bail!(
+                "markdown conversion produced no blocks — refusing to delete existing content"
+            );
+        }
+
+        let root_block = self.get_block(doc_token, &root_block_id).await?;
+        let root_children = extract_child_ids(&root_block);
+        if !root_children.is_empty() {
+            self.batch_delete_children(doc_token, &root_block_id, 0, root_children.len())
+                .await?;
+        }
+
+        self.insert_children_blocks(doc_token, &root_block_id, None, converted.clone())
+            .await?;
+
+        Ok(converted.len())
+    }
+
+    async fn write_created_document_content_with_retry(
+        &self,
+        doc_token: &str,
+        content: &str,
+    ) -> anyhow::Result<usize> {
+        let max_attempts = 5usize;
+        let mut last_err = String::new();
+
+        for attempt in 1..=max_attempts {
+            match self.replace_document_content(doc_token, content).await {
+                Ok(blocks_written) => return Ok(blocks_written),
+                Err(e) => {
+                    last_err = e.to_string();
+                    tracing::warn!(
+                        "feishu_doc: document {} content write attempt {}/{} failed: {}",
+                        doc_token,
+                        attempt,
+                        max_attempts,
+                        last_err
+                    );
+                    if attempt < max_attempts {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500 * attempt as u64,
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "content write did not succeed after {} attempts: {}",
+            max_attempts,
+            last_err
+        )
     }
 
     async fn insert_children_blocks(
@@ -1359,7 +1434,7 @@ impl Tool for FeishuDocTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Markdown content for write/append/update_block"
+                    "description": "Markdown content for write/append/update_block (or create: if set, writes after creation)"
                 },
                 "title": {
                     "type": "string",
