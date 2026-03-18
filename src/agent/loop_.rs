@@ -1026,6 +1026,7 @@ pub(crate) async fn run_tool_call_loop_with_non_cli_approval_context(
     excluded_tools: &[String],
     progress_mode: ProgressMode,
     safety_heartbeat: Option<SafetyHeartbeatConfig>,
+    loop_detection_config: LoopDetectionConfig,
 ) -> Result<String> {
     let reply_target = non_cli_approval_context
         .as_ref()
@@ -1036,27 +1037,30 @@ pub(crate) async fn run_tool_call_loop_with_non_cli_approval_context(
             progress_mode,
             SAFETY_HEARTBEAT_CONFIG.scope(
                 safety_heartbeat,
-                TOOL_LOOP_NON_CLI_APPROVAL_CONTEXT.scope(
-                    non_cli_approval_context,
-                    TOOL_LOOP_REPLY_TARGET.scope(
-                        reply_target,
-                        run_tool_call_loop(
-                            provider,
-                            history,
-                            tools_registry,
-                            observer,
-                            provider_name,
-                            model,
-                            temperature,
-                            silent,
-                            approval,
-                            channel_name,
-                            multimodal_config,
-                            max_tool_iterations,
-                            cancellation_token,
-                            on_delta,
-                            hooks,
-                            excluded_tools,
+                LOOP_DETECTION_CONFIG.scope(
+                    loop_detection_config,
+                    TOOL_LOOP_NON_CLI_APPROVAL_CONTEXT.scope(
+                        non_cli_approval_context,
+                        TOOL_LOOP_REPLY_TARGET.scope(
+                            reply_target,
+                            run_tool_call_loop(
+                                provider,
+                                history,
+                                tools_registry,
+                                observer,
+                                provider_name,
+                                model,
+                                temperature,
+                                silent,
+                                approval,
+                                channel_name,
+                                multimodal_config,
+                                max_tool_iterations,
+                                cancellation_token,
+                                on_delta,
+                                hooks,
+                                excluded_tools,
+                            ),
                         ),
                     ),
                 ),
@@ -4649,6 +4653,7 @@ mod tests {
             &[],
             ProgressMode::Verbose,
             None,
+            LoopDetectionConfig::default(),
         )
         .await
         .expect("tool loop should continue after non-cli approval");

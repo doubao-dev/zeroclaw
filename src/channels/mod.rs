@@ -261,6 +261,9 @@ struct ChannelRuntimeDefaults {
     multimodal: crate::config::MultimodalConfig,
     query_classification: crate::config::QueryClassificationConfig,
     model_routes: Vec<crate::config::ModelRouteConfig>,
+    loop_detection_no_progress_threshold: usize,
+    loop_detection_ping_pong_cycles: usize,
+    loop_detection_failure_streak: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,6 +338,9 @@ struct ChannelRuntimeContext {
     approval_manager: Arc<ApprovalManager>,
     safety_heartbeat: Option<SafetyHeartbeatConfig>,
     startup_perplexity_filter: crate::config::PerplexityFilterConfig,
+    loop_detection_no_progress_threshold: usize,
+    loop_detection_ping_pong_cycles: usize,
+    loop_detection_failure_streak: usize,
 }
 
 #[derive(Clone)]
@@ -1106,6 +1112,9 @@ fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
         multimodal: config.multimodal.clone(),
         query_classification: config.query_classification.clone(),
         model_routes: config.model_routes.clone(),
+        loop_detection_no_progress_threshold: config.agent.loop_detection_no_progress_threshold,
+        loop_detection_ping_pong_cycles: config.agent.loop_detection_ping_pong_cycles,
+        loop_detection_failure_streak: config.agent.loop_detection_failure_streak,
     }
 }
 
@@ -1162,6 +1171,9 @@ fn runtime_defaults_snapshot(ctx: &ChannelRuntimeContext) -> ChannelRuntimeDefau
         multimodal: ctx.multimodal.clone(),
         query_classification: ctx.query_classification.clone(),
         model_routes: ctx.model_routes.clone(),
+        loop_detection_no_progress_threshold: ctx.loop_detection_no_progress_threshold,
+        loop_detection_ping_pong_cycles: ctx.loop_detection_ping_pong_cycles,
+        loop_detection_failure_streak: ctx.loop_detection_failure_streak,
     }
 }
 
@@ -3831,6 +3843,11 @@ or tune thresholds in config.",
                             &excluded_tools_snapshot,
                             progress_mode,
                             ctx.safety_heartbeat.clone(),
+                            crate::agent::loop_::LoopDetectionConfig {
+                                no_progress_threshold: runtime_defaults.loop_detection_no_progress_threshold,
+                                ping_pong_cycles: runtime_defaults.loop_detection_ping_pong_cycles,
+                                failure_streak_threshold: runtime_defaults.loop_detection_failure_streak,
+                            },
                         ),
                     ),
                 ),
@@ -5787,6 +5804,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
         } else {
             None
         },
+        loop_detection_no_progress_threshold: config.agent.loop_detection_no_progress_threshold,
+        loop_detection_ping_pong_cycles: config.agent.loop_detection_ping_pong_cycles,
+        loop_detection_failure_streak: config.agent.loop_detection_failure_streak,
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
@@ -6132,6 +6152,9 @@ mod tests {
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -6189,6 +6212,9 @@ mod tests {
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -6249,6 +6275,9 @@ mod tests {
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -6932,6 +6961,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7019,6 +7051,9 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7093,6 +7128,9 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7181,6 +7219,9 @@ BTC is currently around $65,000 based on latest tool output."#
             model_routes: Vec::new(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7268,6 +7309,9 @@ BTC is currently around $65,000 based on latest tool output."#
             model_routes: Vec::new(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7340,6 +7384,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7414,6 +7461,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7490,6 +7540,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7597,6 +7650,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
         assert_eq!(
             runtime_ctx
@@ -7735,6 +7791,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::clone(&approval_manager),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7824,6 +7883,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::clone(&approval_manager),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -7902,6 +7964,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         let runtime_ctx_for_first_turn = runtime_ctx.clone();
@@ -8066,6 +8131,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
         assert_eq!(
             runtime_ctx
@@ -8181,6 +8249,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager,
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8291,6 +8362,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager,
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8383,6 +8457,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::clone(&approval_manager),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8485,6 +8562,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::clone(&approval_manager),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8588,6 +8668,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8739,6 +8822,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
         maybe_apply_runtime_config_update(runtime_ctx.as_ref())
             .await
@@ -8836,6 +8922,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -8986,6 +9075,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9106,6 +9198,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9206,6 +9301,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9325,6 +9423,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(&autonomy_cfg)),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9445,6 +9546,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9524,6 +9628,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9586,6 +9693,9 @@ BTC is currently around $65,000 based on latest tool output."#
                         multimodal: crate::config::MultimodalConfig::default(),
                         query_classification: crate::config::QueryClassificationConfig::default(),
                         model_routes: Vec::new(),
+                        loop_detection_no_progress_threshold: 3,
+                        loop_detection_ping_pong_cycles: 2,
+                        loop_detection_failure_streak: 3,
                     },
                     perplexity_filter: crate::config::PerplexityFilterConfig::default(),
                     outbound_leak_guard: crate::config::OutboundLeakGuardConfig::default(),
@@ -9633,6 +9743,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -9820,6 +9933,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         maybe_apply_runtime_config_update(runtime_ctx.as_ref())
@@ -9977,6 +10093,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -10045,6 +10164,9 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: mock_price_approved_manager(),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -10227,6 +10349,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -10317,6 +10442,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -10419,6 +10547,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -10503,6 +10634,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -10572,6 +10706,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -11203,6 +11340,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -11299,6 +11439,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -11394,6 +11537,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -11493,6 +11639,9 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
@@ -12321,6 +12470,9 @@ BTC is currently around $65,000 based on latest tool output."#;
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -12397,6 +12549,9 @@ BTC is currently around $65,000 based on latest tool output."#;
             )),
             safety_heartbeat: None,
             startup_perplexity_filter: crate::config::PerplexityFilterConfig::default(),
+            loop_detection_no_progress_threshold: 3,
+            loop_detection_ping_pong_cycles: 2,
+            loop_detection_failure_streak: 3,
         });
 
         process_channel_message(
