@@ -1100,11 +1100,25 @@ impl LarkChannel {
                     let (text, post_mentioned_open_ids) = match lark_msg.message_type.as_str() {
                         "text" => match extract_text_message_content(&lark_msg.content) {
                             Some(text) => (text, Vec::new()),
-                            None => continue,
+                            None => {
+                                tracing::debug!(
+                                    message_id = %lark_msg.message_id,
+                                    chat_type = %lark_msg.chat_type,
+                                    "Lark WS: dropped text message because content could not be extracted"
+                                );
+                                continue;
+                            }
                         },
                         "post" => match parse_post_content_details_value(&lark_msg.content) {
                             Some(details) => (details.text, details.mentioned_open_ids),
-                            None => continue,
+                            None => {
+                                tracing::debug!(
+                                    message_id = %lark_msg.message_id,
+                                    chat_type = %lark_msg.chat_type,
+                                    "Lark WS: dropped post message because rich-text content could not be parsed"
+                                );
+                                continue;
+                            }
                         },
                         "image" => {
                             let text = if let Some(image_key) = parse_image_key_value(&lark_msg.content) {
@@ -1134,7 +1148,15 @@ impl LarkChannel {
                     // Strip @_user_N placeholders
                     let text = strip_at_placeholders(&text);
                     let text = text.trim().to_string();
-                    if text.is_empty() { continue; }
+                    if text.is_empty() {
+                        tracing::debug!(
+                            message_id = %lark_msg.message_id,
+                            msg_type = %lark_msg.message_type,
+                            chat_type = %lark_msg.chat_type,
+                            "Lark WS: dropped message because parsed text is empty"
+                        );
+                        continue;
+                    }
 
                     // Group-chat: only respond when explicitly @-mentioned
                     let bot_open_id = self.resolved_bot_open_id();
@@ -1148,6 +1170,14 @@ impl LarkChannel {
                             &post_mentioned_open_ids,
                         )
                     {
+                        tracing::debug!(
+                            message_id = %lark_msg.message_id,
+                            mention_only = self.mention_only,
+                            bot_open_id = ?bot_open_id,
+                            mentions_count = lark_msg.mentions.len(),
+                            post_mentions_count = post_mentioned_open_ids.len(),
+                            "Lark WS: dropped group message because it did not satisfy mention gating"
+                        );
                         continue;
                     }
 
@@ -1682,11 +1712,25 @@ impl LarkChannel {
         let (text, post_mentioned_open_ids): (String, Vec<String>) = match msg_type {
             "text" => match extract_text_message_content(&content) {
                 Some(text) => (text, Vec::new()),
-                None => return messages,
+                None => {
+                    tracing::debug!(
+                        msg_type,
+                        chat_type,
+                        "Lark webhook: dropped text message because content could not be extracted"
+                    );
+                    return messages;
+                }
             },
             "post" => match parse_post_content_details_value(&content) {
                 Some(details) => (details.text, details.mentioned_open_ids),
-                None => return messages,
+                None => {
+                    tracing::debug!(
+                        msg_type,
+                        chat_type,
+                        "Lark webhook: dropped post message because rich-text content could not be parsed"
+                    );
+                    return messages;
+                }
             },
             "image" => (LARK_IMAGE_DOWNLOAD_FALLBACK_TEXT.to_string(), Vec::new()),
             _ => {
@@ -1706,6 +1750,15 @@ impl LarkChannel {
                 &post_mentioned_open_ids,
             )
         {
+            tracing::debug!(
+                msg_type,
+                chat_type,
+                mention_only = self.mention_only,
+                bot_open_id = ?bot_open_id,
+                mentions_count = mentions.len(),
+                post_mentions_count = post_mentioned_open_ids.len(),
+                "Lark webhook: dropped group message because it did not satisfy mention gating"
+            );
             return messages;
         }
 
@@ -1811,11 +1864,27 @@ impl LarkChannel {
         let (text, post_mentioned_open_ids): (String, Vec<String>) = match msg_type {
             "text" => match extract_text_message_content(&content) {
                 Some(text) => (text, Vec::new()),
-                None => return messages,
+                None => {
+                    tracing::debug!(
+                        message_id = ?message_id,
+                        msg_type,
+                        chat_type,
+                        "Lark webhook callback: dropped text message because content could not be extracted"
+                    );
+                    return messages;
+                }
             },
             "post" => match parse_post_content_details_value(&content) {
                 Some(details) => (details.text, details.mentioned_open_ids),
-                None => return messages,
+                None => {
+                    tracing::debug!(
+                        message_id = ?message_id,
+                        msg_type,
+                        chat_type,
+                        "Lark webhook callback: dropped post message because rich-text content could not be parsed"
+                    );
+                    return messages;
+                }
             },
             "image" => {
                 let text = if let Some(image_key) = parse_image_key_value(&content) {
@@ -1859,6 +1928,16 @@ impl LarkChannel {
                 &post_mentioned_open_ids,
             )
         {
+            tracing::debug!(
+                message_id = ?message_id,
+                msg_type,
+                chat_type,
+                mention_only = self.mention_only,
+                bot_open_id = ?bot_open_id,
+                mentions_count = mentions.len(),
+                post_mentions_count = post_mentioned_open_ids.len(),
+                "Lark webhook callback: dropped group message because it did not satisfy mention gating"
+            );
             return messages;
         }
 
@@ -2306,16 +2385,91 @@ struct ParsedPostContent {
     mentioned_open_ids: Vec<String>,
 }
 
-fn parse_post_content_details(content: &str) -> Option<ParsedPostContent> {
-    let parsed = serde_json::from_str::<serde_json::Value>(content).ok()?;
-    let locale = parsed
+fn unwrap_post_locale<'a>(parsed: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
+    if parsed.get("title").is_some() || parsed.get("content").is_some() {
+        return Some(parsed);
+    }
+
+    parsed
         .get("zh_cn")
         .or_else(|| parsed.get("en_us"))
+        .or_else(|| parsed.get("ja_jp"))
         .or_else(|| {
             parsed
                 .as_object()
                 .and_then(|m| m.values().find(|v| v.is_object()))
-        })?;
+        })
+}
+
+fn render_post_element(el: &serde_json::Value, mentioned_open_ids: &mut Vec<String>) -> String {
+    match el.get("tag").and_then(|t| t.as_str()).unwrap_or("") {
+        "text" => el
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "a" => el
+            .get("text")
+            .and_then(|t| t.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| el.get("href").and_then(|h| h.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        "at" => {
+            let name = el
+                .get("user_name")
+                .and_then(|n| n.as_str())
+                .or_else(|| el.get("user_id").and_then(|i| i.as_str()))
+                .unwrap_or("user");
+            if let Some(open_id) = el
+                .get("user_id")
+                .and_then(|i| i.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && *id != "all")
+            {
+                mentioned_open_ids.push(open_id.to_string());
+            }
+            if el.get("user_id").and_then(|i| i.as_str()) == Some("all") {
+                "@all".to_string()
+            } else {
+                format!("@{name}")
+            }
+        }
+        "code_block" => {
+            let lang = el.get("language").and_then(|v| v.as_str()).unwrap_or("");
+            let code = el.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if code.is_empty() {
+                String::new()
+            } else if lang.is_empty() {
+                format!("\n```\n{code}\n```\n")
+            } else {
+                format!("\n```{lang}\n{code}\n```\n")
+            }
+        }
+        "hr" => "\n---\n".to_string(),
+        "img" => el
+            .get("image_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|key| format!("[image:{key}]"))
+            .unwrap_or_default(),
+        "media" => el
+            .get("file_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|key| format!("[file:{key}]"))
+            .unwrap_or_default(),
+        _ => el
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
+fn parse_post_content_details(content: &str) -> Option<ParsedPostContent> {
+    let parsed = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let locale = unwrap_post_locale(&parsed)?;
 
     let mut text = String::new();
     let mut mentioned_open_ids = Vec::new();
@@ -2332,43 +2486,15 @@ fn parse_post_content_details(content: &str) -> Option<ParsedPostContent> {
     if let Some(paragraphs) = locale.get("content").and_then(|c| c.as_array()) {
         for para in paragraphs {
             if let Some(elements) = para.as_array() {
+                let mut line = String::new();
                 for el in elements {
-                    match el.get("tag").and_then(|t| t.as_str()).unwrap_or("") {
-                        "text" => {
-                            if let Some(t) = el.get("text").and_then(|t| t.as_str()) {
-                                text.push_str(t);
-                            }
-                        }
-                        "a" => {
-                            text.push_str(
-                                el.get("text")
-                                    .and_then(|t| t.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .or_else(|| el.get("href").and_then(|h| h.as_str()))
-                                    .unwrap_or(""),
-                            );
-                        }
-                        "at" => {
-                            let n = el
-                                .get("user_name")
-                                .and_then(|n| n.as_str())
-                                .or_else(|| el.get("user_id").and_then(|i| i.as_str()))
-                                .unwrap_or("user");
-                            text.push('@');
-                            text.push_str(n);
-                            if let Some(open_id) = el
-                                .get("user_id")
-                                .and_then(|i| i.as_str())
-                                .map(str::trim)
-                                .filter(|id| !id.is_empty())
-                            {
-                                mentioned_open_ids.push(open_id.to_string());
-                            }
-                        }
-                        _ => {}
-                    }
+                    line.push_str(&render_post_element(el, &mut mentioned_open_ids));
                 }
-                text.push('\n');
+                let trimmed_line = line.trim_end();
+                if !trimmed_line.is_empty() {
+                    text.push_str(trimmed_line);
+                    text.push('\n');
+                }
             }
         }
     }
@@ -3395,6 +3521,48 @@ mod tests {
         });
 
         assert_eq!(ch.parse_event_payload(&payload).len(), 1);
+    }
+
+    #[test]
+    fn parse_post_content_details_keeps_code_blocks_and_unknown_text_tags() {
+        let content = r#"{
+            "zh_cn": {
+                "title": "使用：",
+                "content": [
+                    [
+                        {"tag":"text","text":"1. 获取 bytedcli 仓库："}
+                    ],
+                    [
+                        {"tag":"code_block","language":"bash","text":"git clone ssh://example/bytedcli.git"}
+                    ],
+                    [
+                        {"tag":"emotion","text":"继续下一步"}
+                    ]
+                ]
+            }
+        }"#;
+
+        let parsed = parse_post_content_details(content).expect("post should parse");
+        assert!(parsed.text.contains("使用："));
+        assert!(parsed.text.contains("1. 获取 bytedcli 仓库："));
+        assert!(parsed.text.contains("```bash"));
+        assert!(parsed.text.contains("继续下一步"));
+    }
+
+    #[test]
+    fn parse_post_content_details_accepts_flat_post_shape() {
+        let content = r#"{
+            "title": "使用：",
+            "content": [
+                [
+                    {"tag":"text","text":"1. 获取 bytedcli 仓库："}
+                ]
+            ]
+        }"#;
+
+        let parsed = parse_post_content_details(content).expect("flat post should parse");
+        assert!(parsed.text.contains("使用："));
+        assert!(parsed.text.contains("1. 获取 bytedcli 仓库："));
     }
 
     #[test]
