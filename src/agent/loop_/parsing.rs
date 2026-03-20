@@ -1197,450 +1197,24 @@ pub(super) fn parse_glm_shortened_body(body: &str) -> Option<ParsedToolCall> {
 }
 
 // ── Tool-Call Parsing ─────────────────────────────────────────────────────
-// LLM responses may contain tool calls in multiple formats depending on
-// the provider. Parsing follows a priority chain:
-//   1. OpenAI-style JSON with `tool_calls` array (native API)
-//   2. XML tags: <tool_call>, <toolcall>, <tool-call>, <invoke>
-//   3. Markdown code blocks with `tool_call` language
-//   4. GLM-style line-based format (e.g. `shell/command>ls`)
-// SECURITY: We never fall back to extracting arbitrary JSON from the
-// response body, because that would enable prompt-injection attacks where
-// malicious content in emails/files/web pages mimics a tool call.
+// Tool parsing is intentionally strict:
+// only OpenAI-style JSON payloads with a `tool_calls` array are accepted.
 
-/// Parse tool calls from an LLM response that uses XML-style function calling.
-///
-/// Expected format (common with system-prompt-guided tool use):
-/// ```text
-/// <tool_call>
-/// {"name": "shell", "arguments": {"command": "ls"}}
-/// </tool_call>
-/// ```
-///
-/// Also accepts common tag variants (`<toolcall>`, `<tool-call>`) for model
-/// compatibility.
-///
-/// Also supports JSON with `tool_calls` array from OpenAI-format responses.
+/// Parse tool calls only from OpenAI-format JSON payloads with `tool_calls`.
 pub(super) fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
-    let mut text_parts = Vec::new();
-    let mut calls = Vec::new();
-    let mut remaining = response;
-
-    // First, try to parse as OpenAI-style JSON response with tool_calls array
-    // This handles providers like Minimax that return tool_calls in native JSON format
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-        calls = parse_tool_calls_from_json_value(&json_value);
+        let calls = parse_tool_calls_from_json_value(&json_value);
         if !calls.is_empty() {
-            // If we found tool_calls, extract any content field as text.
-            // Some providers wrap tool calls under `message` or `choices[*].message`.
+            let mut text_parts = Vec::new();
             if let Some(content) = extract_tool_text_from_json_value(&json_value) {
-                text_parts.push(content);
+                if !content.trim().is_empty() {
+                    text_parts.push(content);
+                }
             }
             return (text_parts.join("\n"), calls);
         }
     }
-
-    if let Some((minimax_text, minimax_calls)) = parse_minimax_invoke_calls(response) {
-        if !minimax_calls.is_empty() {
-            return (minimax_text, minimax_calls);
-        }
-    }
-
-    // Fall back to XML-style tool-call tag parsing.
-    while let Some((start, open_tag)) = find_first_tag(remaining, &TOOL_CALL_OPEN_TAGS) {
-        // Everything before the tag is text
-        let before = &remaining[..start];
-        if !before.trim().is_empty() {
-            text_parts.push(before.trim().to_string());
-        }
-
-        let Some(close_tag) = matching_tool_call_close_tag(open_tag) else {
-            break;
-        };
-
-        let after_open = &remaining[start + open_tag.len()..];
-        if let Some(close_idx) = after_open.find(close_tag) {
-            let inner = &after_open[..close_idx];
-            let mut parsed_any = false;
-
-            // Try JSON format first
-            let json_values = extract_json_values(inner);
-            for value in json_values {
-                let parsed_calls = parse_tool_calls_from_json_value(&value);
-                if !parsed_calls.is_empty() {
-                    parsed_any = true;
-                    calls.extend(parsed_calls);
-                }
-            }
-
-            // If JSON parsing failed, try XML format (DeepSeek/GLM style)
-            if !parsed_any {
-                if let Some(xml_calls) = parse_xml_tool_calls(inner) {
-                    calls.extend(xml_calls);
-                    parsed_any = true;
-                }
-            }
-
-            if !parsed_any {
-                // GLM-style shortened body: `shell>uname -a` or `shell\ncommand: date`
-                if let Some(glm_call) = parse_glm_shortened_body(inner) {
-                    calls.push(glm_call);
-                    parsed_any = true;
-                }
-            }
-
-            if !parsed_any {
-                tracing::warn!(
-                    "Malformed <tool_call>: expected tool-call object in tag body (JSON/XML/GLM)"
-                );
-            }
-
-            remaining = &after_open[close_idx + close_tag.len()..];
-        } else {
-            // Matching close tag not found — try cross-alias close tags first.
-            // Models sometimes mix open/close tag aliases (e.g. <tool_call>...</invoke>).
-            let mut resolved = false;
-            if let Some((cross_idx, cross_tag)) = find_first_tag(after_open, &TOOL_CALL_CLOSE_TAGS)
-            {
-                let inner = &after_open[..cross_idx];
-                let mut parsed_any = false;
-
-                // Try JSON
-                let json_values = extract_json_values(inner);
-                for value in json_values {
-                    let parsed_calls = parse_tool_calls_from_json_value(&value);
-                    if !parsed_calls.is_empty() {
-                        parsed_any = true;
-                        calls.extend(parsed_calls);
-                    }
-                }
-
-                // Try XML
-                if !parsed_any {
-                    if let Some(xml_calls) = parse_xml_tool_calls(inner) {
-                        calls.extend(xml_calls);
-                        parsed_any = true;
-                    }
-                }
-
-                // Try GLM shortened body
-                if !parsed_any {
-                    if let Some(glm_call) = parse_glm_shortened_body(inner) {
-                        calls.push(glm_call);
-                        parsed_any = true;
-                    }
-                }
-
-                if parsed_any {
-                    remaining = &after_open[cross_idx + cross_tag.len()..];
-                    resolved = true;
-                }
-            }
-
-            if resolved {
-                continue;
-            }
-
-            // No cross-alias close tag resolved — fall back to JSON recovery
-            // from unclosed tags (brace-balancing).
-            if let Some(json_end) = find_json_end(after_open) {
-                if let Ok(value) =
-                    serde_json::from_str::<serde_json::Value>(&after_open[..json_end])
-                {
-                    let parsed_calls = parse_tool_calls_from_json_value(&value);
-                    if !parsed_calls.is_empty() {
-                        calls.extend(parsed_calls);
-                        remaining = strip_leading_close_tags(&after_open[json_end..]);
-                        continue;
-                    }
-                }
-            }
-
-            if let Some((value, consumed_end)) = extract_first_json_value_with_end(after_open) {
-                let parsed_calls = parse_tool_calls_from_json_value(&value);
-                if !parsed_calls.is_empty() {
-                    calls.extend(parsed_calls);
-                    remaining = strip_leading_close_tags(&after_open[consumed_end..]);
-                    continue;
-                }
-            }
-
-            // Last resort: try GLM shortened body on everything after the open tag.
-            // The model may have emitted `<tool_call>shell>ls` with no close tag at all.
-            let glm_input = after_open.trim();
-            if let Some(glm_call) = parse_glm_shortened_body(glm_input) {
-                calls.push(glm_call);
-                remaining = "";
-                continue;
-            }
-
-            remaining = &remaining[start..];
-            break;
-        }
-    }
-
-    // If XML tags found nothing, try markdown code blocks with tool_call language.
-    // Models behind OpenRouter sometimes output ```tool_call ... ``` or hybrid
-    // ```tool_call ... </tool_call> instead of structured API calls or XML tags.
-    if calls.is_empty() {
-        static MD_TOOL_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(
-                r"(?s)```(?:tool[_-]?call|invoke)\s*\n(.*?)(?:```|</tool[_-]?call>|</toolcall>|</invoke>|</minimax:toolcall>)",
-            )
-            .unwrap()
-        });
-        let mut md_text_parts: Vec<String> = Vec::new();
-        let mut last_end = 0;
-
-        for cap in MD_TOOL_CALL_RE.captures_iter(response) {
-            let full_match = cap.get(0).unwrap();
-            let before = &response[last_end..full_match.start()];
-            if !before.trim().is_empty() {
-                md_text_parts.push(before.trim().to_string());
-            }
-            let inner = &cap[1];
-            let json_values = extract_json_values(inner);
-            for value in json_values {
-                let parsed_calls = parse_tool_calls_from_json_value(&value);
-                calls.extend(parsed_calls);
-            }
-            last_end = full_match.end();
-        }
-
-        if !calls.is_empty() {
-            let after = &response[last_end..];
-            if !after.trim().is_empty() {
-                md_text_parts.push(after.trim().to_string());
-            }
-            text_parts = md_text_parts;
-            remaining = "";
-        }
-    }
-
-    // Try ```tool <name> format used by some providers (e.g., xAI grok)
-    // Example: ```tool file_write\n{"path": "...", "content": "..."}\n```
-    if calls.is_empty() {
-        static MD_TOOL_NAME_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?s)```tool\s+(\w+)\s*\n(.*?)(?:```|$)").unwrap());
-        let mut md_text_parts: Vec<String> = Vec::new();
-        let mut last_end = 0;
-
-        for cap in MD_TOOL_NAME_RE.captures_iter(response) {
-            let full_match = cap.get(0).unwrap();
-            let before = &response[last_end..full_match.start()];
-            if !before.trim().is_empty() {
-                md_text_parts.push(before.trim().to_string());
-            }
-            let tool_name = &cap[1];
-            let inner = &cap[2];
-
-            // Try to parse the inner content as JSON arguments
-            let json_values = extract_json_values(inner);
-            if json_values.is_empty() {
-                // Log a warning if we found a tool block but couldn't parse arguments
-                tracing::warn!(
-                    tool_name = %tool_name,
-                    inner = %inner.chars().take(100).collect::<String>(),
-                    "Found ```tool <name> block but could not parse JSON arguments"
-                );
-            } else {
-                for value in json_values {
-                    let arguments = if value.is_object() {
-                        value
-                    } else {
-                        serde_json::Value::Object(serde_json::Map::new())
-                    };
-                    calls.push(ParsedToolCall {
-                        name: tool_name.to_string(),
-                        arguments,
-                        tool_call_id: None,
-                    });
-                }
-            }
-            last_end = full_match.end();
-        }
-
-        if !calls.is_empty() {
-            let after = &response[last_end..];
-            if !after.trim().is_empty() {
-                md_text_parts.push(after.trim().to_string());
-            }
-            text_parts = md_text_parts;
-            remaining = "";
-        }
-    }
-
-    // Direct XML tool tags (without <tool_call> wrapper), e.g.:
-    // <shell>pwd</shell>
-    // <file_write><path>...</path><content>...</content></file_write>
-    if calls.is_empty() {
-        if let Some(xml_calls) = parse_xml_tool_calls(remaining) {
-            let direct_calls: Vec<ParsedToolCall> = xml_calls
-                .into_iter()
-                .filter(|call| is_probable_direct_xml_tool_name(&call.name))
-                .collect();
-            if !direct_calls.is_empty() {
-                let mut cleaned_text = remaining.to_string();
-                let parsed_names: HashSet<&str> =
-                    direct_calls.iter().map(|call| call.name.as_str()).collect();
-
-                for (tag_name, _) in extract_xml_pairs(remaining) {
-                    let canonical_tag = map_tool_name_alias(tag_name);
-                    if !parsed_names.contains(tag_name) && !parsed_names.contains(canonical_tag) {
-                        continue;
-                    }
-
-                    let open = format!("<{tag_name}>");
-                    let close = format!("</{tag_name}>");
-                    while let Some(start) = cleaned_text.find(&open) {
-                        let search_from = start + open.len();
-                        let Some(end_rel) = cleaned_text[search_from..].find(&close) else {
-                            break;
-                        };
-                        let end = search_from + end_rel + close.len();
-                        cleaned_text.replace_range(start..end, "");
-                    }
-                }
-
-                calls.extend(direct_calls);
-                if !cleaned_text.trim().is_empty() {
-                    text_parts.push(cleaned_text.trim().to_string());
-                }
-                remaining = "";
-            }
-        }
-    }
-
-    // XML attribute-style tool calls:
-    // <minimax:toolcall>
-    // <invoke name="shell">
-    // <parameter name="command">ls</parameter>
-    // </invoke>
-    // </minimax:toolcall>
-    if calls.is_empty() {
-        let xml_calls = parse_xml_attribute_tool_calls(remaining);
-        if !xml_calls.is_empty() {
-            let mut cleaned_text = remaining.to_string();
-            for call in xml_calls {
-                calls.push(call);
-                // Try to remove the XML from text
-                if let Some(start) = cleaned_text.find("<minimax:toolcall>") {
-                    if let Some(end) = cleaned_text.find("</minimax:toolcall>") {
-                        let end_pos = end + "</minimax:toolcall>".len();
-                        if end_pos <= cleaned_text.len() {
-                            cleaned_text =
-                                format!("{}{}", &cleaned_text[..start], &cleaned_text[end_pos..]);
-                        }
-                    }
-                }
-            }
-            if !cleaned_text.trim().is_empty() {
-                text_parts.push(cleaned_text.trim().to_string());
-            }
-            remaining = "";
-        }
-    }
-
-    // Perl/hash-ref style tool calls:
-    // TOOL_CALL
-    // {tool => "shell", args => {
-    //   --command "ls -la"
-    //   --description "List current directory contents"
-    // }}
-    // /TOOL_CALL
-    if calls.is_empty() {
-        let perl_calls = parse_perl_style_tool_calls(remaining);
-        if !perl_calls.is_empty() {
-            let mut cleaned_text = remaining.to_string();
-            for call in perl_calls {
-                calls.push(call);
-                // Try to remove the TOOL_CALL block from text
-                while let Some(start) = cleaned_text.find("TOOL_CALL") {
-                    if let Some(end) = cleaned_text.find("/TOOL_CALL") {
-                        let end_pos = end + "/TOOL_CALL".len();
-                        if end_pos <= cleaned_text.len() {
-                            cleaned_text =
-                                format!("{}{}", &cleaned_text[..start], &cleaned_text[end_pos..]);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if !cleaned_text.trim().is_empty() {
-                text_parts.push(cleaned_text.trim().to_string());
-            }
-            remaining = "";
-        }
-    }
-
-    // <FunctionCall>
-    // file_read
-    // <code>path>/Users/...</code>
-    // </FunctionCall>
-    if calls.is_empty() {
-        let func_calls = parse_function_call_tool_calls(remaining);
-        if !func_calls.is_empty() {
-            let mut cleaned_text = remaining.to_string();
-            for call in func_calls {
-                calls.push(call);
-                // Try to remove the FunctionCall block from text
-                while let Some(start) = cleaned_text.find("<FunctionCall>") {
-                    if let Some(end) = cleaned_text.find("</FunctionCall>") {
-                        let end_pos = end + "</FunctionCall>".len();
-                        if end_pos <= cleaned_text.len() {
-                            cleaned_text =
-                                format!("{}{}", &cleaned_text[..start], &cleaned_text[end_pos..]);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if !cleaned_text.trim().is_empty() {
-                text_parts.push(cleaned_text.trim().to_string());
-            }
-            remaining = "";
-        }
-    }
-
-    // GLM-style tool calls (browser_open/url>https://..., shell/command>ls, etc.)
-    if calls.is_empty() {
-        let glm_calls = parse_glm_style_tool_calls(remaining);
-        if !glm_calls.is_empty() {
-            let mut cleaned_text = remaining.to_string();
-            for (name, args, raw) in &glm_calls {
-                calls.push(ParsedToolCall {
-                    name: name.clone(),
-                    arguments: args.clone(),
-                    tool_call_id: None,
-                });
-                if let Some(r) = raw {
-                    cleaned_text = cleaned_text.replace(r, "");
-                }
-            }
-            if !cleaned_text.trim().is_empty() {
-                text_parts.push(cleaned_text.trim().to_string());
-            }
-            remaining = "";
-        }
-    }
-
-    // SECURITY: We do NOT fall back to extracting arbitrary JSON from the response
-    // here. That would enable prompt injection attacks where malicious content
-    // (e.g., in emails, files, or web pages) could include JSON that mimics a
-    // tool call. Tool calls MUST be explicitly wrapped in either:
-    // 1. OpenAI-style JSON with a "tool_calls" array
-    // 2. ZeroClaw tool-call tags (<tool_call>, <toolcall>, <tool-call>)
-    // 3. Markdown code blocks with tool_call/toolcall/tool-call language
-    // 4. Explicit GLM line-based call formats (e.g. `shell/command>...`)
-    // This ensures only the LLM's intentional tool calls are executed.
-
-    // Remaining text after last tool call
-    if !remaining.trim().is_empty() {
-        text_parts.push(remaining.trim().to_string());
-    }
-
-    (text_parts.join("\n"), calls)
+    (String::new(), Vec::new())
 }
 
 pub(super) fn detect_tool_call_parse_issue(
@@ -1719,4 +1293,24 @@ pub(super) fn parse_structured_tool_calls(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_calls_rejects_plain_url_text() {
+        let (text, calls) = parse_tool_calls("https://example.com");
+        assert!(text.is_empty());
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_calls_accepts_openai_tool_calls_json() {
+        let input = r#"{"tool_calls":[{"id":"call_1","name":"file_read","arguments":"{\"path\":\"/tmp/a.txt\"}"}]}"#;
+        let (_text, calls) = parse_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "file_read");
+    }
 }
