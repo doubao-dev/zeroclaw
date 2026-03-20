@@ -1132,7 +1132,6 @@ pub async fn run_tool_call_loop(
     let runtime_trace_redact = runtime_trace::redact_enabled();
     let runtime_trace_store_raw = runtime_trace::store_raw_enabled();
     let runtime_trace_include_system_prompt = runtime_trace::include_system_prompt_enabled();
-    let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut missing_tool_call_retry_used = false;
     let mut missing_tool_call_retry_prompt: Option<String> = None;
     let mut empty_response_retry_used = false;
@@ -2088,12 +2087,13 @@ pub async fn run_tool_call_loop(
         // tool executions concurrently for lower wall-clock latency.
         let mut tool_results = String::new();
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
-        let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
+        let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome, bool)>> =
             (0..tool_calls.len()).map(|_| None).collect();
         let allow_parallel_execution = should_execute_tools_in_parallel(&tool_calls, approval);
         let mut executable_indices: Vec<usize> = Vec::new();
         let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
         let mut progress_indices: Vec<Option<usize>> = Vec::new();
+        let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
 
         for (idx, call) in tool_calls.iter().enumerate() {
             // ── Hook: before_tool_call (modifying) ──────────
@@ -2145,6 +2145,7 @@ pub async fn run_tool_call_loop(
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
                             },
+                            false,
                         ));
                         continue;
                     }
@@ -2203,6 +2204,7 @@ pub async fn run_tool_call_loop(
                         error_reason: Some(blocked),
                         duration: Duration::ZERO,
                     },
+                    false,
                 ));
                 continue;
             }
@@ -2314,6 +2316,7 @@ pub async fn run_tool_call_loop(
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
                             },
+                            false,
                         ));
                         continue;
                     }
@@ -2323,7 +2326,7 @@ pub async fn run_tool_call_loop(
             let signature = tool_call_signature(&tool_name, &tool_args);
             if !seen_tool_signatures.insert(signature) {
                 let duplicate = format!(
-                    "Skipped duplicate tool call '{tool_name}' with identical arguments in this turn."
+                    "Skipped duplicate tool call '{tool_name}' with identical arguments in this response."
                 );
                 runtime_trace::record_event(
                     "tool_call_result",
@@ -2364,6 +2367,7 @@ pub async fn run_tool_call_loop(
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
                     },
+                    true,
                 ));
                 continue;
             }
@@ -2521,16 +2525,19 @@ pub async fn run_tool_call_loop(
                 loop_detector.record_call(&sig.0, &sig.1, &outcome.output, outcome.success);
             }
 
-            ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
+            ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome, false));
         }
 
-        for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
+        for (tool_name, tool_call_id, outcome, deduplicated) in ordered_results.into_iter().flatten()
+        {
             individual_results.push((tool_call_id, outcome.output.clone()));
-            let _ = writeln!(
-                tool_results,
-                "<tool_result name=\"{}\">\n{}\n</tool_result>",
-                tool_name, outcome.output
-            );
+            if !deduplicated {
+                let _ = writeln!(
+                    tool_results,
+                    "<tool_result name=\"{}\">\n{}\n</tool_result>",
+                    tool_name, outcome.output
+                );
+            }
         }
 
         // Add assistant message with tool calls + tool results to history.
@@ -2552,7 +2559,7 @@ pub async fn run_tool_call_loop(
                     });
                     history.push(ChatMessage::tool(tool_msg.to_string()));
                 }
-            } else {
+            } else if !tool_results.trim().is_empty() {
                 history.push(ChatMessage::user(format!("[Tool results]\n{tool_results}")));
             }
         } else {
@@ -4847,7 +4854,72 @@ mod tests {
             .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
             .expect("prompt-mode tool result payload should be present");
         assert!(tool_results.content.contains("counted:A"));
-        assert!(tool_results.content.contains("Skipped duplicate tool call"));
+        assert!(!tool_results.content.contains("Skipped duplicate tool call"));
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_allows_retrying_same_tool_call_across_iterations() {
+        let provider = ScriptedProvider::from_text_responses(vec![
+            r#"<tool_call>
+{"name":"count_tool","arguments":{"value":"A"}}
+</tool_call>"#,
+            r#"<tool_call>
+{"name":"count_tool","arguments":{"value":"A"}}
+</tool_call>"#,
+            "done",
+        ]);
+
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
+            "count_tool",
+            Arc::clone(&invocations),
+        ))];
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("run tool calls"),
+        ];
+        let observer = NoopObserver;
+
+        let result = run_tool_call_loop(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock-provider",
+            "mock-model",
+            0.0,
+            true,
+            None,
+            "cli",
+            &crate::config::MultimodalConfig::default(),
+            5,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("loop should allow same tool call on a later iteration");
+
+        assert_eq!(result, "done");
+        assert_eq!(
+            invocations.load(Ordering::SeqCst),
+            2,
+            "same signature should be allowed when it appears in a later iteration"
+        );
+
+        let wrapped_tool_results = history
+            .iter()
+            .filter(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
+            .collect::<Vec<_>>();
+        assert_eq!(wrapped_tool_results.len(), 2);
+        assert!(wrapped_tool_results
+            .iter()
+            .all(|msg| msg.content.contains("counted:A")));
+        assert!(wrapped_tool_results
+            .iter()
+            .all(|msg| !msg.content.contains("Skipped duplicate tool call")));
     }
 
     #[tokio::test]
