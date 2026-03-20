@@ -24,6 +24,7 @@ pub mod bg_run;
 pub mod browser;
 pub mod browser_open;
 pub mod channel_ack_config;
+pub mod channel_ack_config_actions;
 pub mod cli_discovery;
 pub mod composio;
 pub mod content_search;
@@ -38,6 +39,8 @@ pub mod delegate_coordination_status;
 pub mod docx_read;
 #[cfg(feature = "channel-lark")]
 pub mod feishu_bitable;
+#[cfg(feature = "channel-lark")]
+pub mod feishu_bitable_actions;
 #[cfg(feature = "channel-lark")]
 pub mod feishu_doc;
 pub mod file_edit;
@@ -97,7 +100,6 @@ pub use bg_run::{
 };
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
-pub use channel_ack_config::ChannelAckConfigTool;
 pub use composio::ComposioTool;
 pub use content_search::ContentSearchTool;
 pub use cron_add::CronAddTool;
@@ -109,11 +111,6 @@ pub use cron_update::CronUpdateTool;
 pub use delegate::DelegateTool;
 pub use delegate_coordination_status::DelegateCoordinationStatusTool;
 pub use docx_read::DocxReadTool;
-#[cfg(feature = "channel-lark")]
-pub use feishu_bitable::{
-    FeishuBitableAppTableFieldTool, FeishuBitableAppTableRecordTool, FeishuBitableAppTableTool,
-    FeishuBitableAppTableViewTool, FeishuBitableAppTool,
-};
 #[cfg(feature = "channel-lark")]
 pub use feishu_doc::FeishuDocTool;
 pub use file_edit::FileEditTool;
@@ -170,6 +167,9 @@ use crate::memory::Memory;
 use crate::plugins;
 use crate::runtime::{NativeRuntime, RuntimeAdapter};
 use crate::security::SecurityPolicy;
+use crate::tools::channel_ack_config_actions::build_channel_ack_action_tools;
+#[cfg(feature = "channel-lark")]
+use crate::tools::feishu_bitable_actions::build_feishu_bitable_action_tools;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -373,7 +373,6 @@ pub fn all_tools_with_runtime(
             config.clone(),
             security.clone(),
         )),
-        Arc::new(ChannelAckConfigTool::new(config.clone(), security.clone())),
         Arc::new(ProxyConfigTool::new(config.clone(), security.clone())),
         Arc::new(WebAccessConfigTool::new(config.clone(), security.clone())),
         Arc::new(WebSearchConfigTool::new(config.clone(), security.clone())),
@@ -386,6 +385,10 @@ pub fn all_tools_with_runtime(
             workspace_dir.to_path_buf(),
         )),
     ];
+    tool_arcs.extend(build_channel_ack_action_tools(
+        config.clone(),
+        security.clone(),
+    ));
 
     if has_shell_access {
         tool_arcs.push(Arc::new(ShellTool::new_with_syscall_detector(
@@ -690,36 +693,12 @@ pub fn all_tools_with_runtime(
                     use_feishu,
                     security.clone(),
                 )));
-                tool_arcs.push(Arc::new(FeishuBitableAppTool::new(
-                    app_id.clone(),
-                    app_secret.clone(),
-                    use_feishu,
-                    security.clone(),
-                )));
-                tool_arcs.push(Arc::new(FeishuBitableAppTableTool::new(
-                    app_id.clone(),
-                    app_secret.clone(),
-                    use_feishu,
-                    security.clone(),
-                )));
-                tool_arcs.push(Arc::new(FeishuBitableAppTableFieldTool::new(
-                    app_id.clone(),
-                    app_secret.clone(),
-                    use_feishu,
-                    security.clone(),
-                )));
-                tool_arcs.push(Arc::new(FeishuBitableAppTableViewTool::new(
-                    app_id.clone(),
-                    app_secret.clone(),
-                    use_feishu,
-                    security.clone(),
-                )));
-                tool_arcs.push(Arc::new(FeishuBitableAppTableRecordTool::new(
+                tool_arcs.extend(build_feishu_bitable_action_tools(
                     app_id,
                     app_secret,
                     use_feishu,
                     security.clone(),
-                )));
+                ));
             }
         }
     }
