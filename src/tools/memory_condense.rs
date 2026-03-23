@@ -23,11 +23,11 @@ impl Default for MemoryCondenseTool {
 #[async_trait]
 impl Tool for MemoryCondenseTool {
     fn name(&self) -> &str {
-        "memory_condense"
+        "self_memory_condense"
     }
 
     fn description(&self) -> &str {
-        "Provide condensed memory to keep, and trigger a context reset using that memory.\n\nUse this tool when you have already summarized the important information from the current conversation, and you want to continue with only that summary as context. The system will clear the old history and keep ONLY your summary and the latest user request as the new background context.\n\nRules:\n- You MUST call memory_condense alone.\n- Do NOT call any other tools in the same response."
+        "Provide condensed memory to keep, and trigger a context reset using that memory.\n\nUse this tool when you have already summarized the important information from the current conversation, and you want to continue with only that summary as context. The system will clear the old history and keep ONLY your summary and the latest user request as the new background context.\n\nRules:\n- You MUST call self_memory_condense alone.\n- Do NOT call any other tools in the same response."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -36,7 +36,7 @@ impl Tool for MemoryCondenseTool {
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "The memory content that should be kept for future context. Provide a concise summary of the important facts, decisions, and ongoing plans. The content should be short, focused, and free of irrelevant details. Call memory_condense alone (no other tool calls in the same response)."
+                    "description": "The memory content that should be kept for future context. Provide a concise summary of the important facts, decisions, and ongoing plans. The content should be short, focused, and free of irrelevant details. Call self_memory_condense alone (no other tool calls in the same response)."
                 }
             },
             "required": ["summary"]

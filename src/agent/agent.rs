@@ -504,7 +504,7 @@ impl Agent {
             } else if self.turn_count_since_last_condense >= interval.saturating_sub(2) {
                 let reminder = format!(
                     "\n\n[SYSTEM REMINDER: The context window is reaching its limit ({} turns). \
-                    Please invoke the 'memory_condense' tool IMMEDIATELY to summarize the current progress before continuing.]",
+                    Please invoke the 'self_memory_condense' tool IMMEDIATELY to summarize the current progress before continuing.]",
                     self.turn_count_since_last_condense
                 );
                 user_message_for_history.push_str(&reminder);
@@ -673,15 +673,16 @@ impl Agent {
                 reasoning_content: response.reasoning_content.clone(),
             });
 
-            let has_memory_condense = calls.iter().any(|call| call.name == "memory_condense");
+            let has_memory_condense =
+                calls.iter().any(|call| call.name == "self_memory_condense");
             let mut results = if has_memory_condense && calls.len() != 1 {
                 calls
                     .iter()
                     .map(|call| {
-                        let output = if call.name == "memory_condense" {
-                            "Error: memory_condense must be called alone. Do not call any other tools in the same response.".to_string()
+                        let output = if call.name == "self_memory_condense" {
+                            "Error: self_memory_condense must be called alone. Do not call any other tools in the same response.".to_string()
                         } else {
-                            "Error: tool call skipped because memory_condense must be called alone."
+                            "Error: tool call skipped because self_memory_condense must be called alone."
                                 .to_string()
                         };
                         ToolExecutionResult {
@@ -699,7 +700,7 @@ impl Agent {
             let mut did_condense = false;
             if has_memory_condense && calls.len() == 1 {
                 if let Some(result) = results.first_mut() {
-                    if result.name == "memory_condense" && result.success {
+                    if result.name == "self_memory_condense" && result.success {
                         if let Some(summary) = result.output.strip_prefix(
                             crate::tools::memory_condense::MEMORY_CONDENSE_PAYLOAD_PREFIX,
                         ) {
@@ -716,7 +717,7 @@ impl Agent {
                                 "<system_reminder>\n\
                                 This session continues a previous conversation that lost its context due to length limits.\n\
                                 You have proactively used MemoryCondense to summarize the past conversation.\n\
-                                Your memory budget in this session is {} rounds, you should use the memory_condense tool again when approaching this limit.\n\
+                                Your memory budget in this session is {} rounds, you should use the self_memory_condense tool again when approaching this limit.\n\
                                 </system_reminder>\n\
                                 \n\
                                 The summary you provided to keep as context:\n\
@@ -794,7 +795,7 @@ impl Agent {
             "<system_reminder>\n\
             This session continues a previous conversation that lost its context due to length limits.\n\
             The context was FORCED CLEARED because the memory budget ({} rounds) was exceeded.\n\
-            Please ensure you proactively use the 'memory_condense' tool in the future before hitting the limit.\n\
+            Please ensure you proactively use the 'self_memory_condense' tool in the future before hitting the limit.\n\
             </system_reminder>\n\
             \n\
             No summary was provided. The conversation continues from the last available messages.",
