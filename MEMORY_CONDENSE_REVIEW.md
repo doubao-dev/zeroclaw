@@ -72,10 +72,12 @@ ZeroClaw 的 agent 运行在长对话/多轮工具调用场景下容易触达上
 - 模块声明与导出： [tools/mod.rs](file:///Users/bytedance/Projects/zeroclaw/wt/active_memory/src/tools/mod.rs#L60-L140)
 - `all_tools_with_runtime` 注册： [tools/mod.rs](file:///Users/bytedance/Projects/zeroclaw/wt/active_memory/src/tools/mod.rs#L360-L390)
 
-## 评审关注点（建议）
+## 评审关注点
 
 建议 reviewer 重点关注以下正确性与边界：
 
 1. native tool dispatcher 的消息序列约束是否被遵守（压缩后不应留下孤立的 tool message）
 2. `self_memory_condense` 与其他工具同轮调用时是否能稳定阻断，避免并行执行造成上下文不一致
 3. reminder/强制提示是否仅影响 prompt/history，而不会污染 memory recall/autosave 的输入
+<br />
+
