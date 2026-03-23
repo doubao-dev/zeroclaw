@@ -1087,6 +1087,19 @@ pub struct AgentConfig {
 
     #[serde(default)]
     pub empty_response_policy: EmptyResponsePolicy,
+
+    /// Enable proactive memory condense tool
+    #[serde(default)]
+    pub enable_memory_condense: bool,
+
+    /// Number of turns before forcing a memory condense. Set to 0 to disable force.
+    /// Default: 20
+    #[serde(default = "default_condense_force_interval")]
+    pub condense_force_interval: usize,
+}
+
+fn default_condense_force_interval() -> usize {
+    20
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1214,6 +1227,8 @@ impl Default for AgentConfig {
             safety_heartbeat_turn_interval: default_safety_heartbeat_turn_interval(),
             deferred_action_policy: DeferredActionPolicy::default(),
             empty_response_policy: EmptyResponsePolicy::default(),
+            enable_memory_condense: false,
+            condense_force_interval: default_condense_force_interval(),
         }
     }
 }

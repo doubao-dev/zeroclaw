@@ -60,6 +60,7 @@ pub mod mcp_client;
 pub mod mcp_protocol;
 pub mod mcp_tool;
 pub mod mcp_transport;
+pub mod memory_condense;
 pub mod memory_forget;
 pub mod memory_observe;
 pub mod memory_recall;
@@ -128,6 +129,7 @@ pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
 pub use mcp_client::McpRegistry;
 pub use mcp_tool::McpToolWrapper;
+pub use memory_condense::MemoryCondenseTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_observe::MemoryObserveTool;
 pub use memory_recall::MemoryRecallTool;
@@ -366,6 +368,7 @@ pub fn all_tools_with_runtime(
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryObserveTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),
+        Arc::new(MemoryCondenseTool::new()),
         Arc::new(MemoryForgetTool::new(memory, security.clone())),
         Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
         Arc::new(TaskPlanTool::new(security.clone())),

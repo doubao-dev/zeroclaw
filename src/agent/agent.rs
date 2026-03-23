@@ -42,6 +42,7 @@ pub struct Agent {
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
     research_config: ResearchPhaseConfig,
+    turn_count_since_last_condense: usize,
 }
 
 pub struct AgentBuilder {
@@ -234,6 +235,7 @@ impl AgentBuilder {
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             research_config: self.research_config.unwrap_or_default(),
+            turn_count_since_last_condense: 0,
         })
     }
 }
@@ -408,7 +410,8 @@ impl Agent {
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
 
-        let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
+        let (result, success) = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name)
+        {
             match tool.execute(call.arguments.clone()).await {
                 Ok(r) => {
                     self.observer.record_event(&ObserverEvent::ToolCall {
@@ -417,9 +420,9 @@ impl Agent {
                         success: r.success,
                     });
                     if r.success {
-                        r.output
+                        (r.output, true)
                     } else {
-                        format!("Error: {}", r.error.unwrap_or(r.output))
+                        (format!("Error: {}", r.error.unwrap_or(r.output)), false)
                     }
                 }
                 Err(e) => {
@@ -428,17 +431,17 @@ impl Agent {
                         duration: start.elapsed(),
                         success: false,
                     });
-                    format!("Error executing {}: {e}", call.name)
+                    (format!("Error executing {}: {e}", call.name), false)
                 }
             }
         } else {
-            format!("Unknown tool: {}", call.name)
+            (format!("Unknown tool: {}", call.name), false)
         };
 
         ToolExecutionResult {
             name: call.name.clone(),
             output: result,
-            success: true,
+            success,
             tool_call_id: call.tool_call_id.clone(),
         }
     }
@@ -484,6 +487,30 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        self.turn_count_since_last_condense += 1;
+        let user_message_clean = user_message.to_string();
+        let mut user_message_for_history = user_message_clean.clone();
+
+        if self.config.enable_memory_condense && self.config.condense_force_interval > 0 {
+            let interval = self.config.condense_force_interval;
+            if self.turn_count_since_last_condense >= interval {
+                tracing::warn!("Force condensing memory due to turn limit");
+                self.force_condense_history();
+                self.turn_count_since_last_condense = 0;
+                user_message_for_history = format!(
+                    "[System: Previous context was hard-cleared due to length limit.]\n{}",
+                    user_message_for_history
+                );
+            } else if self.turn_count_since_last_condense >= interval.saturating_sub(2) {
+                let reminder = format!(
+                    "\n\n[SYSTEM REMINDER: The context window is reaching its limit ({} turns). \
+                    Please invoke the 'memory_condense' tool IMMEDIATELY to summarize the current progress before continuing.]",
+                    self.turn_count_since_last_condense
+                );
+                user_message_for_history.push_str(&reminder);
+            }
+        }
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -499,13 +526,18 @@ impl Agent {
         if self.auto_save {
             let _ = self
                 .memory
-                .store("user_msg", user_message, MemoryCategory::Conversation, None)
+                .store(
+                    "user_msg",
+                    &user_message_clean,
+                    MemoryCategory::Conversation,
+                    None,
+                )
                 .await;
         }
 
         let context = self
             .memory_loader
-            .load_context(self.memory.as_ref(), user_message)
+            .load_context(self.memory.as_ref(), &user_message_clean)
             .await
             .unwrap_or_default();
 
@@ -555,7 +587,7 @@ impl Agent {
         };
 
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-        let stamped_user_message = format!("[{now}] {user_message}");
+        let stamped_user_message = format!("[{now}] {user_message_for_history}");
         let enriched = match (&context, &research_context) {
             (c, Some(r)) if !c.is_empty() => {
                 format!("{c}\n\n{r}\n\n{stamped_user_message}")
@@ -569,11 +601,12 @@ impl Agent {
             .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
 
         let effective_model = self.classify_model(user_message);
-        let mut loop_detector = LoopDetector::new(LoopDetectionConfig {
+        let loop_detection_config = LoopDetectionConfig {
             no_progress_threshold: self.config.loop_detection_no_progress_threshold,
             ping_pong_cycles: self.config.loop_detection_ping_pong_cycles,
             failure_streak_threshold: self.config.loop_detection_failure_streak,
-        });
+        };
+        let mut loop_detector = LoopDetector::new(loop_detection_config.clone());
 
         for iteration in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
@@ -640,7 +673,76 @@ impl Agent {
                 reasoning_content: response.reasoning_content.clone(),
             });
 
-            let results = self.execute_tools(&calls).await;
+            let has_memory_condense = calls.iter().any(|call| call.name == "memory_condense");
+            let mut results = if has_memory_condense && calls.len() != 1 {
+                calls
+                    .iter()
+                    .map(|call| {
+                        let output = if call.name == "memory_condense" {
+                            "Error: memory_condense must be called alone. Do not call any other tools in the same response.".to_string()
+                        } else {
+                            "Error: tool call skipped because memory_condense must be called alone."
+                                .to_string()
+                        };
+                        ToolExecutionResult {
+                            name: call.name.clone(),
+                            output,
+                            success: false,
+                            tool_call_id: call.tool_call_id.clone(),
+                        }
+                    })
+                    .collect()
+            } else {
+                self.execute_tools(&calls).await
+            };
+
+            let mut did_condense = false;
+            if has_memory_condense && calls.len() == 1 {
+                if let Some(result) = results.first_mut() {
+                    if result.name == "memory_condense" && result.success {
+                        if let Some(summary) = result.output.strip_prefix(
+                            crate::tools::memory_condense::MEMORY_CONDENSE_PAYLOAD_PREFIX,
+                        ) {
+                            let mut new_history = Vec::new();
+
+                            if let Some(sys_msg) = self.history.first().cloned() {
+                                if matches!(sys_msg, ConversationMessage::Chat(ref c) if c.role == "system")
+                                {
+                                    new_history.push(sys_msg);
+                                }
+                            }
+
+                            let condense_text = format!(
+                                "<system_reminder>\n\
+                                This session continues a previous conversation that lost its context due to length limits.\n\
+                                You have proactively used MemoryCondense to summarize the past conversation.\n\
+                                Your memory budget in this session is {} rounds, you should use the memory_condense tool again when approaching this limit.\n\
+                                </system_reminder>\n\
+                                \n\
+                                The summary you provided to keep as context:\n\
+                                {}\n\
+                                \n\
+                                Here is the user's most recent query context:\n\
+                                {}",
+                                self.config.condense_force_interval,
+                                summary,
+                                user_message_clean
+                            );
+                            new_history
+                                .push(ConversationMessage::Chat(ChatMessage::user(condense_text)));
+
+                            self.history = new_history;
+                            self.turn_count_since_last_condense = 0;
+                            loop_detector = LoopDetector::new(loop_detection_config.clone());
+                            did_condense = true;
+                        }
+                    }
+                }
+            }
+
+            if did_condense {
+                continue;
+            }
 
             // ── Loop detection: record calls ─────────────────────
             for (call, result) in calls.iter().zip(results.iter()) {
@@ -653,7 +755,6 @@ impl Agent {
             self.history.push(formatted);
             self.trim_history();
 
-            // ── Loop detection: check verdict ────────────────────
             match loop_detector.check() {
                 DetectionVerdict::Continue => {}
                 DetectionVerdict::InjectWarning(warning) => {
@@ -669,12 +770,40 @@ impl Agent {
                     );
                 }
             }
-        }
+    }
 
-        anyhow::bail!(
-            "Agent exceeded maximum tool iterations ({})",
-            self.config.max_tool_iterations
-        )
+    anyhow::bail!(
+        "Agent exceeded maximum tool iterations ({})",
+        self.config.max_tool_iterations
+    )
+}
+
+    fn force_condense_history(&mut self) {
+        let sys_msgs: Vec<_> = self
+            .history
+            .iter()
+            .filter(|m| matches!(m, ConversationMessage::Chat(c) if c.role == "system"))
+            .cloned()
+            .collect();
+
+        let recent_msgs: Vec<_> = self.history.iter().rev().take(2).rev().cloned().collect();
+
+        self.history = sys_msgs;
+
+        let forced_condense_text = format!(
+            "<system_reminder>\n\
+            This session continues a previous conversation that lost its context due to length limits.\n\
+            The context was FORCED CLEARED because the memory budget ({} rounds) was exceeded.\n\
+            Please ensure you proactively use the 'memory_condense' tool in the future before hitting the limit.\n\
+            </system_reminder>\n\
+            \n\
+            No summary was provided. The conversation continues from the last available messages.",
+            self.config.condense_force_interval
+        );
+
+        self.history
+            .push(ConversationMessage::Chat(ChatMessage::user(forced_condense_text)));
+        self.history.extend(recent_msgs);
     }
 
     pub async fn run_single(&mut self, message: &str) -> Result<String> {
