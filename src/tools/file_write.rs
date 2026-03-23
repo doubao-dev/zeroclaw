@@ -33,12 +33,28 @@ fn hard_link_write_block_message(path: &Path) -> String {
     )
 }
 
-fn zeroclaw_runtime_config_notice(path: &Path) -> Option<&'static str> {
+fn is_zeroclaw_runtime_config(path: &Path) -> bool {
     let is_config_toml = path.file_name().is_some_and(|name| name == "config.toml");
     let mentions_zeroclaw = path.components().any(|component| {
         component.as_os_str() == "zeroclaw" || component.as_os_str() == ".zeroclaw"
     });
-    if is_config_toml && mentions_zeroclaw {
+    is_config_toml && mentions_zeroclaw
+}
+
+fn contains_masked_secret_placeholder(content: &str) -> bool {
+    content.contains("[REDACTED]") || content.contains("***MASKED***")
+}
+
+fn masked_runtime_config_write_block_message(path: &Path) -> String {
+    format!(
+        "Refusing to write ZeroClaw runtime config '{}' with scrubbed secret placeholders. \
+Restore the real secret values or use the config API so masked secrets can be hydrated safely.",
+        path.display()
+    )
+}
+
+fn zeroclaw_runtime_config_notice(path: &Path) -> Option<&'static str> {
+    if is_zeroclaw_runtime_config(path) {
         Some(
             "Note: if this is ZeroClaw's active runtime config, some settings \
 (for example MCP server changes) are loaded only on process start. Report any \
@@ -199,6 +215,16 @@ impl Tool for FileWriteTool {
             }
         }
 
+        if is_zeroclaw_runtime_config(&resolved_target)
+            && contains_masked_secret_placeholder(content)
+        {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(masked_runtime_config_write_block_message(&resolved_target)),
+            });
+        }
+
         if !self.security.record_action() {
             return Ok(ToolResult {
                 success: false,
@@ -340,6 +366,32 @@ mod tests {
         assert!(result
             .output
             .contains("do not restart ZeroClaw automatically"));
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn file_write_blocks_scrubbed_runtime_config_secrets() {
+        let dir = std::env::temp_dir().join("zeroclaw_test_file_write_runtime_config_redacted");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(dir.join(".zeroclaw"))
+            .await
+            .unwrap();
+
+        let tool = FileWriteTool::new(test_security(dir.clone()));
+        let result = tool
+            .execute(json!({
+                "path": ".zeroclaw/config.toml",
+                "content": "[channels_config.lark]\napp_secret = \"enc2*[REDACTED]\"\n",
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|msg| msg.contains("scrubbed secret placeholders")));
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

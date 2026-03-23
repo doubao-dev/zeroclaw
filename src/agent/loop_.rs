@@ -178,8 +178,14 @@ static SENSITIVE_KEY_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
     .unwrap()
 });
 
+// Match whole sensitive key/value pairs while preserving the original key name
+// and delimiter style (`:` vs `=`). Keep the pattern compatible with Rust's
+// `regex` crate, which does not support look-around or backreferences.
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"([^"]{8,})"|'([^']{8,})'|([a-zA-Z0-9_\-\.]{8,}))"#).unwrap()
+    Regex::new(
+        r#"(?i)(^|[^A-Za-z0-9_.-])(?:"([A-Za-z0-9_.-]*?(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))"|'([A-Za-z0-9_.-]*?(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))'|([A-Za-z0-9_.-]*?(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)))\s*([:=])\s*(?:"([^"]{8,})"|'([^']{8,})'|([a-zA-Z0-9_\-\.]{8,}))"#,
+    )
+    .unwrap()
 });
 
 /// Detect "I'll do X" style deferred-action replies that often indicate a missing
@@ -225,35 +231,45 @@ static CJK_SCRIPT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub(crate) fn scrub_credentials(input: &str) -> String {
     SENSITIVE_KV_REGEX
         .replace_all(input, |caps: &regex::Captures| {
-            let full_match = &caps[0];
-            let key = &caps[1];
+            let leading = caps.get(1).map_or("", |m| m.as_str());
+            let (key_quote, key) = if let Some(m) = caps.get(2) {
+                ("\"", m.as_str())
+            } else if let Some(m) = caps.get(3) {
+                ("'", m.as_str())
+            } else {
+                ("", caps.get(4).map_or("", |m| m.as_str()))
+            };
+            let delimiter = caps.get(5).map_or(":", |m| m.as_str());
             let val = caps
-                .get(2)
-                .or(caps.get(3))
-                .or(caps.get(4))
+                .get(6)
+                .or_else(|| caps.get(7))
+                .or_else(|| caps.get(8))
                 .map(|m| m.as_str())
                 .unwrap_or("");
 
             // Preserve first 4 chars for context, then redact
-            let prefix = match val.char_indices().nth(4) {
+            let value_prefix = match val.char_indices().nth(4) {
                 Some((idx, _)) => &val[..idx],
                 None => val,
             };
 
-            if full_match.contains(':') {
-                if full_match.contains('"') {
-                    format!("\"{}\": \"{}*[REDACTED]\"", key, prefix)
-                } else {
-                    format!("{}: {}*[REDACTED]", key, prefix)
-                }
-            } else if full_match.contains('=') {
-                if full_match.contains('"') {
-                    format!("{}=\"{}*[REDACTED]\"", key, prefix)
-                } else {
-                    format!("{}={}*[REDACTED]", key, prefix)
-                }
+            let key_repr = if key_quote.is_empty() {
+                key.to_string()
             } else {
-                format!("{}: {}*[REDACTED]", key, prefix)
+                format!("{key_quote}{key}{key_quote}")
+            };
+            let value_repr = if caps.get(6).is_some() {
+                format!("\"{value_prefix}*[REDACTED]\"")
+            } else if caps.get(7).is_some() {
+                format!("'{value_prefix}*[REDACTED]'")
+            } else {
+                format!("{value_prefix}*[REDACTED]")
+            };
+
+            if delimiter == ":" {
+                format!("{leading}{key_repr}: {value_repr}")
+            } else {
+                format!("{leading}{key_repr}={value_repr}")
             }
         })
         .to_string()
@@ -3777,6 +3793,22 @@ mod tests {
         let input = r#"{"token": "提取的token123456"}"#;
         let scrubbed = scrub_credentials(input);
         assert!(scrubbed.contains("\"token\": \"提取的t*[REDACTED]\""));
+    }
+
+    #[test]
+    fn test_scrub_credentials_preserves_full_toml_key_names() {
+        let input = r#"app_secret = "enc2abcdefghi""#;
+        let scrubbed = scrub_credentials(input);
+        assert!(scrubbed.contains(r#"app_secret="enc2*[REDACTED]""#));
+        assert!(!scrubbed.contains(r#"app_"secret":"#));
+    }
+
+    #[test]
+    fn test_scrub_credentials_preserves_full_json_key_names() {
+        let input = r#"{"app_secret": "enc2abcdefghi"}"#;
+        let scrubbed = scrub_credentials(input);
+        assert!(scrubbed.contains(r#""app_secret": "enc2*[REDACTED]""#));
+        assert!(!scrubbed.contains(r#""app_"secret":"#));
     }
 
     #[test]
