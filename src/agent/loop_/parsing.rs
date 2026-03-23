@@ -1,6 +1,5 @@
 use crate::providers::ToolCall;
 use regex::Regex;
-use std::collections::HashSet;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone)]
