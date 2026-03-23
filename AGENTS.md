@@ -11,13 +11,15 @@ Scope: entire repository.
 - Context mentioning external repositories does not authorize cross-repo edits; explicit current-turn override is required.
 - Before any repo-affecting action, verify target lock (`pwd` + git root) to prevent accidental execution in sibling repositories.
 
-## 0.1) Clean Worktree First Gate (Mandatory)
+## 0.1) Clean Workspace and Promotion Gate (Mandatory)
 
-- Before handling any repository content (analysis, debugging, coding, tests, docs, CI), create a **new clean dedicated git worktree** for the active task.
-- Do not perform substantive task work in a dirty workspace.
-- Do not reuse a previously dirty worktree for a new task track.
-- If the current location is dirty, stop and bootstrap a clean worktree/branch first.
-- If worktree bootstrap fails, stop and report the blocker; do not continue in-place.
+- Do not perform substantive task work in a dirty workspace unless that workspace is an intentionally reused local iteration worktree.
+- A single local iteration worktree may be reused for rapid development across multiple local-only changes.
+- Before any push to `origin`, PR preparation, or final validation intended to represent merge-ready state, promote only the intended changes into a **clean dedicated integration worktree**.
+- Risky, long-running, or parallel task streams should still use their own dedicated worktrees from the start.
+- Do not push directly from a mixed or dirty local iteration worktree.
+- If the current location cannot be cleanly isolated for promotion, stop and bootstrap a clean worktree/branch first.
+- If clean-worktree bootstrap or promotion fails, stop and report the blocker; do not push from the dirty workspace.
 
 ## 1) Project Snapshot (Read First)
 
@@ -285,14 +287,17 @@ All contributors (human or agent) must follow the same collaboration flow:
 - Do not start triage/review/implementation/merge work before assignee assignment is confirmed.
 - Queue safety rule: assign only the currently active target; do not pre-assign future queued targets.
 
-### 6.2 Worktree Workflow (Required for All Task Streams)
+### 6.2 Worktree Workflow (Required for Promotion and Parallel Tracks)
 
-Use Git worktrees to isolate every active task stream safely and predictably:
+Use Git worktrees to balance fast local iteration with clean integration:
 
-- Use one dedicated worktree per active branch/PR stream; do not implement directly in a shared default workspace.
-- Keep each worktree on a single branch and a single concern; do not mix unrelated edits in one worktree.
-- Before each commit/push, verify commit hygiene in that worktree (`git status --short` and `git diff --cached`) so only scoped files are included.
-- Run validation commands inside the corresponding worktree before commit/PR.
+- A reusable local iteration worktree is allowed for rapid experimentation and multiple local-only changes.
+- Use one dedicated clean integration worktree per branch/PR stream when preparing to validate, commit, and push a scoped change.
+- Risky, long-running, or parallel task streams should use their own dedicated worktrees from the start rather than sharing the local iteration workspace.
+- Keep each integration worktree on a single branch and a single concern; do not mix unrelated edits in one promotion branch.
+- Before each commit/push, verify commit hygiene in the integration worktree (`git status --short` and `git diff --cached`) so only scoped files are included.
+- Run final validation commands in the clean integration worktree before commit/PR/push.
+- Promotion into the integration worktree may use cherry-pick, patch application, or other auditable Git transfer steps; do not hand-copy unreviewed changes.
 - Name worktrees clearly by scope (for example: `wt/ci-hardening`, `wt/provider-fix`).
 - After PR merge/close (or task abandonment), remove stale worktrees/branches and prune refs (`git worktree prune`, `git fetch --prune`).
 - Local Codex automation may use one-command cleanup helper: `~/.codex/skills/zeroclaw-pr-issue-automation/scripts/cleanup_track.sh --repo-dir <repo_dir> --worktree <worktree_path> --branch <branch_name>`.
