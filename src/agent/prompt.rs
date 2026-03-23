@@ -178,7 +178,7 @@ impl PromptSection for SafetySection {
     }
 
     fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
-        Ok("## Safety\n\n- Do not exfiltrate private data.\n- Do not run destructive commands without asking.\n- Do not bypass oversight or approval mechanisms.\n- Prefer `trash` over `rm`.\n- When in doubt, ask before acting externally.".into())
+        Ok("## Safety\n\n- Do not exfiltrate private data.\n- Do not run destructive commands without asking.\n- Do not bypass oversight or approval mechanisms.\n- Prefer `trash` over `rm`.\n- After editing ZeroClaw config or runtime/deployment scripts, explain whether a ZeroClaw process restart is required. Do not restart ZeroClaw or reboot the machine unless the user explicitly asks.\n- When in doubt, ask before acting externally.".into())
     }
 }
 
@@ -496,6 +496,24 @@ mod tests {
         assert!(prompt.contains("## Tools"));
         assert!(prompt.contains("test_tool"));
         assert!(prompt.contains("instr"));
+    }
+
+    #[test]
+    fn safety_section_mentions_restart_required_changes() {
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let ctx = PromptContext {
+            workspace_dir: Path::new("/tmp"),
+            model_name: "test-model",
+            tools: &tools,
+            skills: &[],
+            skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
+            identity_config: None,
+            dispatcher_instructions: "",
+        };
+
+        let output = SafetySection.build(&ctx).unwrap();
+        assert!(output.contains("explain whether a ZeroClaw process restart is required"));
+        assert!(output.contains("Do not restart ZeroClaw or reboot the machine"));
     }
 
     #[test]

@@ -4543,6 +4543,7 @@ pub fn build_system_prompt_with_mode(
          - Do not run destructive commands without asking.\n\
          - Do not bypass oversight or approval mechanisms.\n\
          - Prefer `trash` over `rm` (recoverable beats gone forever).\n\
+         - After editing ZeroClaw config or runtime/deployment scripts, explain whether a ZeroClaw process restart is required. Do not restart ZeroClaw or reboot the machine unless the user explicitly asks.\n\
          - When in doubt, ask before acting externally.\n\n",
     );
 
@@ -10807,6 +10808,7 @@ BTC is currently around $65,000 based on latest tool output."#
         assert!(prompt.contains("Do not exfiltrate private data"));
         assert!(prompt.contains("Do not run destructive commands"));
         assert!(prompt.contains("Prefer `trash` over `rm`"));
+        assert!(prompt.contains("Do not restart ZeroClaw or reboot the machine"));
     }
 
     #[test]

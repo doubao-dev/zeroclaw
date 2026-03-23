@@ -33,6 +33,23 @@ fn hard_link_write_block_message(path: &Path) -> String {
     )
 }
 
+fn zeroclaw_runtime_config_notice(path: &Path) -> Option<&'static str> {
+    let is_config_toml = path.file_name().is_some_and(|name| name == "config.toml");
+    let mentions_zeroclaw = path.components().any(|component| {
+        component.as_os_str() == "zeroclaw" || component.as_os_str() == ".zeroclaw"
+    });
+    if is_config_toml && mentions_zeroclaw {
+        Some(
+            "Note: if this is ZeroClaw's active runtime config, some settings \
+(for example MCP server changes) are loaded only on process start. Report any \
+restart requirement to the user and let them decide whether, when, and how to \
+restart; do not restart ZeroClaw automatically.",
+        )
+    } else {
+        None
+    }
+}
+
 #[async_trait]
 impl Tool for FileWriteTool {
     fn name(&self) -> &str {
@@ -191,11 +208,18 @@ impl Tool for FileWriteTool {
         }
 
         match tokio::fs::write(&resolved_target, content).await {
-            Ok(()) => Ok(ToolResult {
-                success: true,
-                output: format!("Written {} bytes to {path}", content.len()),
-                error: None,
-            }),
+            Ok(()) => {
+                let mut output = format!("Written {} bytes to {path}", content.len());
+                if let Some(notice) = zeroclaw_runtime_config_notice(&resolved_target) {
+                    output.push('\n');
+                    output.push_str(notice);
+                }
+                Ok(ToolResult {
+                    success: true,
+                    output,
+                    error: None,
+                })
+            }
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -290,6 +314,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(content, "written!");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn file_write_notifies_for_zeroclaw_runtime_config() {
+        let dir = std::env::temp_dir().join("zeroclaw_test_file_write_runtime_config_notice");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(dir.join(".zeroclaw"))
+            .await
+            .unwrap();
+
+        let tool = FileWriteTool::new(test_security(dir.clone()));
+        let result = tool
+            .execute(json!({
+                "path": ".zeroclaw/config.toml",
+                "content": "[mcp]\nenabled = true\n",
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.output.contains("restart requirement to the user"));
+        assert!(result
+            .output
+            .contains("do not restart ZeroClaw automatically"));
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

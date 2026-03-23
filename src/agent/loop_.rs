@@ -2790,6 +2790,18 @@ pub(crate) fn build_shell_policy_instructions(autonomy: &crate::config::Autonomy
     instructions.push_str(
         "- If a requested command is outside policy, choose allowed alternatives and explain the limitation.\n",
     );
+    instructions.push_str(
+        "- After editing ZeroClaw config or runtime/deployment scripts, do not use `shell` or `process` to stop/restart ZeroClaw or reboot the host unless the user explicitly asks.\n",
+    );
+    instructions.push_str(
+        "- Instead, report whether a ZeroClaw process restart is required and let the user decide whether, when, and how to restart.\n",
+    );
+    instructions.push_str(
+        "- Runtime config note: MCP server configuration is loaded at ZeroClaw startup. Editing `[mcp]` does not hot-apply newly configured MCP tools to the current process.\n",
+    );
+    instructions.push_str(
+        "- If the user explicitly asks for a restart, prefer the environment's normal service/container supervisor over ad hoc PID-file shell scripts whenever possible.\n",
+    );
 
     instructions
 }
@@ -6449,6 +6461,17 @@ Tail"#;
 
         assert!(instructions.contains("Autonomy level: `read_only`"));
         assert!(instructions.contains("Shell execution is disabled"));
+    }
+
+    #[test]
+    fn build_shell_policy_instructions_mentions_restart_required_flow() {
+        let autonomy = crate::config::AutonomyConfig::default();
+
+        let instructions = build_shell_policy_instructions(&autonomy);
+
+        assert!(instructions.contains("do not use `shell` or `process` to stop/restart ZeroClaw"));
+        assert!(instructions.contains("let the user decide whether, when, and how to restart"));
+        assert!(instructions.contains("MCP server configuration is loaded at ZeroClaw startup"));
     }
 
     #[test]
