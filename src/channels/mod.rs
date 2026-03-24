@@ -4179,7 +4179,7 @@ or tune thresholds in config.",
                     "  ❌ LLM error after {}ms: {e}",
                     started_at.elapsed().as_millis()
                 );
-                let safe_error = providers::sanitize_api_error(&e.to_string());
+                let error_for_trace = providers::scrub_api_error(&e.to_string());
                 runtime_trace::record_event(
                     "channel_message_error",
                     Some(msg.channel.as_str()),
@@ -4187,10 +4187,11 @@ or tune thresholds in config.",
                     Some(route.model.as_str()),
                     None,
                     Some(false),
-                    Some(&safe_error),
+                    Some(&error_for_trace),
                     serde_json::json!({
                         "sender": msg.sender,
                         "elapsed_ms": started_at.elapsed().as_millis(),
+                        "error": error_for_trace.clone(),
                     }),
                 );
                 let should_rollback_user_turn = e

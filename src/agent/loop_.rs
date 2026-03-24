@@ -1821,6 +1821,7 @@ pub async fn run_tool_call_loop(
             }
             Err(e) => {
                 let safe_error = crate::providers::sanitize_api_error(&e.to_string());
+                let error_for_trace = crate::providers::scrub_api_error(&e.to_string());
                 observer.record_event(&ObserverEvent::LlmResponse {
                     provider: provider_name.to_string(),
                     model: active_model.clone(),
@@ -1837,10 +1838,11 @@ pub async fn run_tool_call_loop(
                     Some(active_model.as_str()),
                     Some(&turn_id),
                     Some(false),
-                    Some(&safe_error),
+                    Some(&error_for_trace),
                     serde_json::json!({
                         "iteration": iteration + 1,
                         "duration_ms": llm_started_at.elapsed().as_millis(),
+                        "error": error_for_trace.clone(),
                     }),
                 );
                 return Err(e);

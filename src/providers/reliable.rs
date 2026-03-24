@@ -198,7 +198,7 @@ fn failure_reason(rate_limited: bool, non_retryable: bool) -> &'static str {
 }
 
 fn compact_error_detail(err: &anyhow::Error) -> String {
-    super::sanitize_api_error(&err.to_string())
+    super::scrub_api_error(&err.to_string())
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -1172,6 +1172,32 @@ mod tests {
         assert!(msg.contains("error=p1 error"));
         assert!(msg.contains("error=p2 error"));
         assert!(msg.contains("retryable"));
+    }
+
+    #[tokio::test]
+    async fn aggregated_error_preserves_full_attempt_detail() {
+        let long_error = format!("500 Internal Server Error: {}", "x".repeat(260));
+        let provider = ReliableProvider::new(
+            vec![(
+                "p1".into(),
+                Box::new(MockProvider {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    fail_until_attempt: usize::MAX,
+                    response: "never",
+                    error: Box::leak(long_error.clone().into_boxed_str()),
+                }),
+            )],
+            0,
+            1,
+        );
+
+        let err = provider
+            .simple_chat("hello", "test", 0.0)
+            .await
+            .expect_err("provider should fail");
+        let msg = err.to_string();
+        assert!(msg.contains(&long_error));
+        assert!(!msg.contains("500 Internal Server Error: xxx..."));
     }
 
     #[test]

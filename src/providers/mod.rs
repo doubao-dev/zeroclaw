@@ -843,9 +843,14 @@ pub fn scrub_secret_patterns(input: &str) -> String {
     scrubbed
 }
 
+/// Scrub secrets from API error text without shortening the diagnostic detail.
+pub fn scrub_api_error(input: &str) -> String {
+    scrub_secret_patterns(input)
+}
+
 /// Sanitize API error text by scrubbing secrets and truncating length.
 pub fn sanitize_api_error(input: &str) -> String {
-    let scrubbed = scrub_secret_patterns(input);
+    let scrubbed = scrub_api_error(input);
 
     if scrubbed.chars().count() <= MAX_API_ERROR_CHARS {
         return scrubbed;
@@ -3343,6 +3348,13 @@ providers = ["demo-plugin-provider"]
         let result = sanitize_api_error(&long);
         assert!(result.len() <= 203);
         assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn scrub_api_error_preserves_long_error() {
+        let long = "a".repeat(400);
+        let result = scrub_api_error(&long);
+        assert_eq!(result, long);
     }
 
     #[test]
