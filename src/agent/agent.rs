@@ -503,8 +503,8 @@ impl Agent {
                 );
             } else if self.turn_count_since_last_condense >= interval.saturating_sub(2) {
                 let reminder = format!(
-                    "\n\n[SYSTEM REMINDER: The context window is reaching its limit ({} turns). \
-                    Please invoke the 'self_memory_condense' tool IMMEDIATELY to summarize the current progress before continuing.]",
+                    "\n\n[SYSTEM REMINDER: The turn budget before a forced context clear is nearly exhausted (in {} turns). \
+                    Please consider invoking the 'self_memory_condense' tool soon to summarize and preserve key context before the budget is exceeded.]",
                     self.turn_count_since_last_condense
                 );
                 user_message_for_history.push_str(&reminder);
