@@ -39,8 +39,8 @@ mod execution;
 mod history;
 mod parsing;
 
-pub use detection::LoopDetectionConfig;
 use context::{build_context, build_hardware_context};
+pub use detection::LoopDetectionConfig;
 use detection::{DetectionVerdict, LoopDetector};
 use execution::{
     execute_tools_parallel, execute_tools_sequential, should_execute_tools_in_parallel,
@@ -346,7 +346,10 @@ const COMPACT_MAX_TOOL_RESULT_CHARS: usize = 50_000;
 const MAX_TOOL_RESULT_CONTEXT_SHARE: f64 = 0.3;
 const APPROX_CHARS_PER_TOKEN: usize = 4;
 
-fn resolve_max_tool_result_chars(compact_context: bool, context_window_tokens: Option<usize>) -> usize {
+fn resolve_max_tool_result_chars(
+    compact_context: bool,
+    context_window_tokens: Option<usize>,
+) -> usize {
     if compact_context {
         return COMPACT_MAX_TOOL_RESULT_CHARS;
     }
@@ -381,7 +384,9 @@ fn truncate_tool_result_for_history(output: &str, max_chars: usize) -> String {
 
     let budget = max_chars - suffix_chars;
     let tail_chars = (budget / 4).min(4_000).max(200);
-    let mut head_chars = budget.saturating_sub(tail_chars).saturating_sub(marker_chars);
+    let mut head_chars = budget
+        .saturating_sub(tail_chars)
+        .saturating_sub(marker_chars);
     head_chars = head_chars.max(2_000).min(budget);
 
     let head: String = output.chars().take(head_chars).collect();
@@ -394,7 +399,8 @@ fn truncate_tool_result_for_history(output: &str, max_chars: usize) -> String {
         .rev()
         .collect();
 
-    if head_chars + marker_chars + tail_chars <= budget && head_chars >= 1_000 && tail_chars >= 200 {
+    if head_chars + marker_chars + tail_chars <= budget && head_chars >= 1_000 && tail_chars >= 200
+    {
         format!("{head}{marker}{tail}{suffix}")
     } else {
         let head_only: String = output.chars().take(budget).collect();
@@ -2609,7 +2615,8 @@ pub async fn run_tool_call_loop(
                 loop_detector.record_call(&sig.0, &sig.1, &outcome.output, outcome.success);
             }
 
-            ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome, false));
+            ordered_results[*idx] =
+                Some((call.name.clone(), call.tool_call_id.clone(), outcome, false));
         }
 
         for (tool_name, tool_call_id, outcome, deduplicated) in
@@ -2745,28 +2752,29 @@ pub async fn run_tool_call_loop_with_config(
     excluded_tools: &[String],
     loop_detection_config: LoopDetectionConfig,
 ) -> Result<String> {
-    LOOP_DETECTION_CONFIG.scope(
-        loop_detection_config,
-        run_tool_call_loop(
-            provider,
-            history,
-            tools_registry,
-            observer,
-            provider_name,
-            model,
-            temperature,
-            silent,
-            approval,
-            channel_name,
-            multimodal_config,
-            max_tool_iterations,
-            cancellation_token,
-            on_delta,
-            hooks,
-            excluded_tools,
-        ),
-    )
-    .await
+    LOOP_DETECTION_CONFIG
+        .scope(
+            loop_detection_config,
+            run_tool_call_loop(
+                provider,
+                history,
+                tools_registry,
+                observer,
+                provider_name,
+                model,
+                temperature,
+                silent,
+                approval,
+                channel_name,
+                multimodal_config,
+                max_tool_iterations,
+                cancellation_token,
+                on_delta,
+                hooks,
+                excluded_tools,
+            ),
+        )
+        .await
 }
 
 /// Build the tool instruction block for the system prompt from concrete tool

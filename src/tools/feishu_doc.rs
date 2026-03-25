@@ -766,6 +766,73 @@ impl FeishuDocTool {
         Ok(items)
     }
 
+    async fn list_children_blocks(
+        &self,
+        doc_token: &str,
+        block_id: &str,
+    ) -> anyhow::Result<Vec<Value>> {
+        const MAX_PAGES: usize = 200;
+        let mut items = Vec::new();
+        let mut page_token = String::new();
+        let mut page_count = 0usize;
+
+        loop {
+            page_count += 1;
+            if page_count > MAX_PAGES {
+                anyhow::bail!(
+                    "list_children_blocks exceeded maximum page limit ({}) for document {}",
+                    MAX_PAGES,
+                    doc_token
+                );
+            }
+            let mut query = vec![
+                ("page_size", "500".to_string()),
+                ("document_revision_id", "-1".to_string()),
+            ];
+            if !page_token.is_empty() {
+                query.push(("page_token", page_token.clone()));
+            }
+
+            let url = format!(
+                "{}/docx/v1/documents/{}/blocks/{}/children",
+                self.api_base(),
+                doc_token,
+                block_id
+            );
+            let payload = self
+                .authed_request_with_query(Method::GET, &url, None, Some(&query))
+                .await?;
+            let data = payload.get("data").cloned().unwrap_or_else(|| json!({}));
+
+            let page_items = data
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            items.extend(page_items);
+
+            let has_more = data
+                .get("has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !has_more {
+                break;
+            }
+
+            page_token = data
+                .get("page_token")
+                .or_else(|| data.get("next_page_token"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if page_token.is_empty() {
+                break;
+            }
+        }
+
+        Ok(items)
+    }
+
     async fn get_block(&self, doc_token: &str, block_id: &str) -> anyhow::Result<Value> {
         let url = format!(
             "{}/docx/v1/documents/{}/blocks/{}",
@@ -781,7 +848,20 @@ impl FeishuDocTool {
     async fn get_root_block_id(&self, doc_token: &str) -> anyhow::Result<String> {
         let blocks = self.list_all_blocks(doc_token).await?;
         if blocks.is_empty() {
-            return Ok(doc_token.to_string());
+            if self
+                .list_children_blocks(doc_token, doc_token)
+                .await
+                .map(|items| !items.is_empty())
+                .unwrap_or(false)
+            {
+                return Ok(doc_token.to_string());
+            }
+            if self.get_block(doc_token, doc_token).await.is_ok() {
+                return Ok(doc_token.to_string());
+            }
+            return Err(anyhow::anyhow!(
+                "unable to determine root block id: block list empty and doc_token is not a block id (if using a wiki node token, set is_wiki=true)"
+            ));
         }
 
         if let Some(id) = blocks
@@ -843,10 +923,10 @@ impl FeishuDocTool {
                     })
                     .collect::<Vec<_>>();
                 if !ordered.is_empty() {
-                    return Ok(ordered);
+                    return Ok(Self::sanitize_converted_blocks(ordered));
                 }
             }
-            return Ok(arr.clone());
+            return Ok(Self::sanitize_converted_blocks(arr.clone()));
         }
 
         if !first_level_block_ids.is_empty() {
@@ -856,25 +936,35 @@ impl FeishuDocTool {
                     .filter_map(|id| map.get(id).cloned())
                     .collect::<Vec<_>>();
                 if !ordered.is_empty() {
-                    return Ok(ordered);
+                    return Ok(Self::sanitize_converted_blocks(ordered));
                 }
             }
         }
 
         for key in ["children", "items", "blocks"] {
             if let Some(arr) = data.get(key).and_then(Value::as_array) {
-                return Ok(arr.clone());
+                return Ok(Self::sanitize_converted_blocks(arr.clone()));
             }
         }
 
         if !first_level_block_ids.is_empty() {
-            return Ok(first_level_block_ids
-                .into_iter()
-                .map(|block_id| json!({ "block_id": block_id }))
-                .collect());
+            return Ok(Self::sanitize_converted_blocks(
+                first_level_block_ids
+                    .into_iter()
+                    .map(|block_id| json!({ "block_id": block_id }))
+                    .collect(),
+            ));
         }
 
         Ok(Vec::new())
+    }
+
+    fn sanitize_converted_blocks(blocks: Vec<Value>) -> Vec<Value> {
+        let mut sanitized = blocks;
+        for block in &mut sanitized {
+            remove_merge_info(block);
+        }
+        sanitized
     }
 
     async fn replace_document_content(
@@ -926,10 +1016,8 @@ impl FeishuDocTool {
                         last_err
                     );
                     if attempt < max_attempts {
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            500 * attempt as u64,
-                        ))
-                        .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
+                            .await;
                     }
                 }
             }
@@ -949,6 +1037,7 @@ impl FeishuDocTool {
         index: Option<usize>,
         children: Vec<Value>,
     ) -> anyhow::Result<Value> {
+        const MAX_CHILDREN_PER_INSERT: usize = 1000;
         let url = format!(
             "{}/docx/v1/documents/{}/blocks/{}/children",
             self.api_base(),
@@ -956,12 +1045,16 @@ impl FeishuDocTool {
             parent_block_id
         );
 
-        let mut body = json!({ "children": children });
-        if let Some(i) = index {
-            body["index"] = json!(i);
+        let mut last_payload = None;
+        for chunk in children.chunks(MAX_CHILDREN_PER_INSERT) {
+            let mut body = json!({ "children": chunk });
+            if let Some(i) = index {
+                body["index"] = json!(i);
+            }
+            let payload = self.authed_request(Method::POST, &url, Some(body)).await?;
+            last_payload = Some(payload);
         }
-
-        self.authed_request(Method::POST, &url, Some(body)).await
+        last_payload.ok_or_else(|| anyhow::anyhow!("no children provided"))
     }
 
     async fn batch_delete_children(
@@ -1834,6 +1927,23 @@ fn sanitize_api_json(body: &Value) -> String {
         }
     }
     crate::providers::scrub_api_error(&v.to_string())
+}
+
+fn remove_merge_info(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("merge_info");
+            for v in map.values_mut() {
+                remove_merge_info(v);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                remove_merge_info(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn has_api_success_code(body: &Value) -> bool {
