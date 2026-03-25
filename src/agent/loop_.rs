@@ -335,8 +335,71 @@ tokio::task_local! {
     static SAFETY_HEARTBEAT_CONFIG: Option<SafetyHeartbeatConfig>;
     static TOOL_LOOP_PROGRESS_MODE: ProgressMode;
     static TOOL_LOOP_COST_ENFORCEMENT_CONTEXT: Option<CostEnforcementContext>;
+    static TOOL_LOOP_MAX_TOOL_RESULT_CHARS: usize;
     static DEFERRED_ACTION_POLICY: crate::config::DeferredActionPolicy;
     static EMPTY_RESPONSE_POLICY: crate::config::EmptyResponsePolicy;
+}
+
+const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 200_000;
+const HARD_MAX_TOOL_RESULT_CHARS: usize = 400_000;
+const COMPACT_MAX_TOOL_RESULT_CHARS: usize = 50_000;
+const MAX_TOOL_RESULT_CONTEXT_SHARE: f64 = 0.3;
+const APPROX_CHARS_PER_TOKEN: usize = 4;
+
+fn resolve_max_tool_result_chars(compact_context: bool, context_window_tokens: Option<usize>) -> usize {
+    if compact_context {
+        return COMPACT_MAX_TOOL_RESULT_CHARS;
+    }
+
+    if let Some(tokens) = context_window_tokens.filter(|v| *v > 0) {
+        let max_tokens = (tokens as f64 * MAX_TOOL_RESULT_CONTEXT_SHARE).floor() as usize;
+        let max_chars = max_tokens.saturating_mul(APPROX_CHARS_PER_TOKEN);
+        return max_chars.clamp(COMPACT_MAX_TOOL_RESULT_CHARS, HARD_MAX_TOOL_RESULT_CHARS);
+    }
+
+    DEFAULT_MAX_TOOL_RESULT_CHARS
+}
+
+fn truncate_tool_result_for_history(output: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return "[Tool output truncated: limit=0]".to_string();
+    }
+
+    let output_chars = output.chars().count();
+    if output_chars <= max_chars {
+        return output.to_string();
+    }
+
+    let suffix = "\n\n[Tool output truncated: original was too large for the model context. Request smaller chunks or use paging/offset parameters if supported.]";
+    let marker = "\n\n[... middle omitted ...]\n\n";
+    let suffix_chars = suffix.chars().count();
+    let marker_chars = marker.chars().count();
+
+    if max_chars <= suffix_chars {
+        return suffix.chars().take(max_chars).collect();
+    }
+
+    let budget = max_chars - suffix_chars;
+    let tail_chars = (budget / 4).min(4_000).max(200);
+    let mut head_chars = budget.saturating_sub(tail_chars).saturating_sub(marker_chars);
+    head_chars = head_chars.max(2_000).min(budget);
+
+    let head: String = output.chars().take(head_chars).collect();
+    let tail: String = output
+        .chars()
+        .rev()
+        .take(tail_chars.min(output_chars))
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    if head_chars + marker_chars + tail_chars <= budget && head_chars >= 1_000 && tail_chars >= 200 {
+        format!("{head}{marker}{tail}{suffix}")
+    } else {
+        let head_only: String = output.chars().take(budget).collect();
+        format!("{head_only}{suffix}")
+    }
 }
 
 /// Configuration for periodic safety-constraint re-injection (heartbeat).
@@ -1164,6 +1227,9 @@ pub async fn run_tool_call_loop(
     let progress_mode = TOOL_LOOP_PROGRESS_MODE
         .try_with(|mode| *mode)
         .unwrap_or(ProgressMode::Verbose);
+    let max_tool_result_chars = TOOL_LOOP_MAX_TOOL_RESULT_CHARS
+        .try_with(|v| *v)
+        .unwrap_or(DEFAULT_MAX_TOOL_RESULT_CHARS);
     let cost_enforcement_context = TOOL_LOOP_COST_ENFORCEMENT_CONTEXT
         .try_with(Clone::clone)
         .ok()
@@ -2546,14 +2612,17 @@ pub async fn run_tool_call_loop(
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome, false));
         }
 
-        for (tool_name, tool_call_id, outcome, deduplicated) in ordered_results.into_iter().flatten()
+        for (tool_name, tool_call_id, outcome, deduplicated) in
+            ordered_results.into_iter().flatten()
         {
-            individual_results.push((tool_call_id, outcome.output.clone()));
+            let output_for_history =
+                truncate_tool_result_for_history(&outcome.output, max_tool_result_chars);
+            individual_results.push((tool_call_id, output_for_history.clone()));
             if !deduplicated {
                 let _ = writeln!(
                     tool_results,
                     "<tool_result name=\"{}\">\n{}\n</tool_result>",
-                    tool_name, outcome.output
+                    tool_name, output_for_history
                 );
             }
         }
@@ -3195,6 +3264,10 @@ pub async fn run(
         } else {
             None
         };
+        let max_tool_result_chars = resolve_max_tool_result_chars(
+            config.agent.compact_context,
+            config.agent.context_window_tokens,
+        );
         let response = scope_cost_enforcement_context(
             cost_enforcement_context.clone(),
             scope_deferred_action_policy(
@@ -3205,25 +3278,28 @@ pub async fn run(
                         hb_cfg,
                         LOOP_DETECTION_CONFIG.scope(
                             ld_cfg,
-                            TOOL_LOOP_PROGRESS_MODE.scope(
-                                ProgressMode::Verbose,
-                                run_tool_call_loop(
-                                    provider.as_ref(),
-                                    &mut history,
-                                    &tools_registry,
-                                    observer.as_ref(),
-                                    provider_name,
-                                    &model_name,
-                                    temperature,
-                                    false,
-                                    approval_manager.as_ref(),
-                                    channel_name,
-                                    &config.multimodal,
-                                    config.agent.max_tool_iterations,
-                                    None,
-                                    Some(delta_tx),
-                                    effective_hooks,
-                                    &[],
+                            TOOL_LOOP_MAX_TOOL_RESULT_CHARS.scope(
+                                max_tool_result_chars,
+                                TOOL_LOOP_PROGRESS_MODE.scope(
+                                    ProgressMode::Verbose,
+                                    run_tool_call_loop(
+                                        provider.as_ref(),
+                                        &mut history,
+                                        &tools_registry,
+                                        observer.as_ref(),
+                                        provider_name,
+                                        &model_name,
+                                        temperature,
+                                        false,
+                                        approval_manager.as_ref(),
+                                        channel_name,
+                                        &config.multimodal,
+                                        config.agent.max_tool_iterations,
+                                        None,
+                                        Some(delta_tx),
+                                        effective_hooks,
+                                        &[],
+                                    ),
                                 ),
                             ),
                         ),
@@ -3390,6 +3466,10 @@ pub async fn run(
             } else {
                 None
             };
+            let max_tool_result_chars = resolve_max_tool_result_chars(
+                config.agent.compact_context,
+                config.agent.context_window_tokens,
+            );
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(100);
             let delta_handle = tokio::spawn(async move {
                 while let Some(delta) = delta_rx.recv().await {
@@ -3409,25 +3489,28 @@ pub async fn run(
                             hb_cfg,
                             LOOP_DETECTION_CONFIG.scope(
                                 ld_cfg,
-                                TOOL_LOOP_PROGRESS_MODE.scope(
-                                    ProgressMode::Verbose,
-                                    run_tool_call_loop(
-                                        provider.as_ref(),
-                                        &mut history,
-                                        &tools_registry,
-                                        observer.as_ref(),
-                                        provider_name,
-                                        &model_name,
-                                        temperature,
-                                        false,
-                                        approval_manager.as_ref(),
-                                        channel_name,
-                                        &config.multimodal,
-                                        config.agent.max_tool_iterations,
-                                        None,
-                                        Some(delta_tx),
-                                        effective_hooks,
-                                        &[],
+                                TOOL_LOOP_MAX_TOOL_RESULT_CHARS.scope(
+                                    max_tool_result_chars,
+                                    TOOL_LOOP_PROGRESS_MODE.scope(
+                                        ProgressMode::Verbose,
+                                        run_tool_call_loop(
+                                            provider.as_ref(),
+                                            &mut history,
+                                            &tools_registry,
+                                            observer.as_ref(),
+                                            provider_name,
+                                            &model_name,
+                                            temperature,
+                                            false,
+                                            approval_manager.as_ref(),
+                                            channel_name,
+                                            &config.multimodal,
+                                            config.agent.max_tool_iterations,
+                                            None,
+                                            Some(delta_tx),
+                                            effective_hooks,
+                                            &[],
+                                        ),
                                     ),
                                 ),
                             ),

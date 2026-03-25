@@ -1032,6 +1032,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub compact_context: bool,
     #[serde(default)]
+    pub context_window_tokens: Option<usize>,
+    #[serde(default)]
     pub session: AgentSessionConfig,
     /// Maximum tool-call loop turns per user message. Default: `20`.
     /// Setting to `0` falls back to the safe default of `20`.
@@ -1200,6 +1202,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             compact_context: true,
+            context_window_tokens: None,
             session: AgentSessionConfig::default(),
             max_tool_iterations: default_agent_max_tool_iterations(),
             max_history_messages: default_agent_max_history_messages(),
