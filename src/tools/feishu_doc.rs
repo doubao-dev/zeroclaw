@@ -1825,7 +1825,15 @@ async fn parse_json_or_empty(resp: reqwest::Response) -> anyhow::Result<Value> {
 }
 
 fn sanitize_api_json(body: &Value) -> String {
-    crate::providers::sanitize_api_error(&body.to_string())
+    let mut v = body.clone();
+    if let Some(obj) = v.as_object_mut() {
+        for key in ["tenant_access_token", "access_token", "refresh_token"] {
+            if obj.contains_key(key) {
+                obj.insert(key.to_string(), Value::String("<redacted>".to_string()));
+            }
+        }
+    }
+    crate::providers::scrub_api_error(&v.to_string())
 }
 
 fn has_api_success_code(body: &Value) -> bool {
