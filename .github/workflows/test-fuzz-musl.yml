@@ -51,15 +51,14 @@ jobs:
                   prefix-key: fuzz-build-release-musl
                   cache-bin: false
 
-            - name: Install musl toolchain
+            - name: Install cross for MUSL build
               shell: bash
               run: |
-                  sudo apt-get update -qq
-                  sudo apt-get install -y musl-tools
+                  cargo install cross --git https://github.com/cross-rs/cross
 
             - name: Build release binary (channel-lark, musl)
               shell: bash
-              run: cargo build --release --locked --features channel-lark --bin zeroclaw --target x86_64-unknown-linux-musl
+              run: cross build --release --locked --features channel-lark --bin zeroclaw --target x86_64-unknown-linux-musl
 
             - name: Upload release artifact
               uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
